@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-import torch
 
 from agentlodge.config import FPS, Settings
 
@@ -22,6 +21,7 @@ class EdgeResult:
 
 
 def _pkl_to_edge151(pkl_path: Path) -> np.ndarray:
+    import torch
     from dataset.quaternion import ax_from_6v
 
     data = pickle.load(open(pkl_path, "rb"))
@@ -46,6 +46,7 @@ def generate_edge_dance(
     os.chdir(edge_root)
     sys.path.insert(0, str(edge_root))
 
+    import torch
     from EDGE import EDGE
 
     cond = torch.from_numpy(np.array(edge_slices))

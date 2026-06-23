@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import glob
-import math
 import os
 import sys
 import tempfile
@@ -11,10 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-import torch
-from omegaconf import OmegaConf
 
-from agentlodge.config import FPS, Settings
+from agentlodge.config import Settings
 
 
 @dataclass
@@ -24,6 +20,8 @@ class LodgeResult:
 
 
 def _resolve_device():
+    import torch
+
     if torch.cuda.is_available():
         return torch.device("cuda:0")
     if torch.backends.mps.is_available():
@@ -32,6 +30,8 @@ def _resolve_device():
 
 
 def _load_modata(keymopath: str, device):
+    import torch
+
     from dld.data.render_joints.smplfk import ax_to_6v
 
     if keymopath.endswith(".pkl"):
@@ -66,6 +66,10 @@ def generate_lodge_dance(
 
     os.chdir(lodge_root)
     sys.path.insert(0, str(lodge_root))
+
+    import glob
+    import torch
+    from omegaconf import OmegaConf
 
     from concat_res import concat_res
     from dld.config import parse_args
