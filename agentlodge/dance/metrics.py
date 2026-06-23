@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import librosa
 import numpy as np
 
-from agentlodge.config import FPS, HOP_LENGTH, SAMPLE_RATE
+from agentlodge.config import FPS
 from agentlodge.audio.preprocess import SongMetadata
 
 
@@ -31,8 +31,12 @@ def _kinematic_energy(motion: np.ndarray) -> np.ndarray:
 
 
 def _detect_kinematic_beats(energy: np.ndarray) -> np.ndarray:
-    envelope = librosa.onset.onset_strength(onset_envelope=energy, sr=SAMPLE_RATE, hop_length=1)
-    peaks = librosa.onset.onset_detect(onset_envelope=envelope, sr=SAMPLE_RATE, hop_length=1)
+    peaks = librosa.onset.onset_detect(
+        onset_envelope=energy,
+        sr=FPS,
+        hop_length=1,
+        units="frames",
+    )
     return np.asarray(peaks, dtype=np.int64)
 
 
