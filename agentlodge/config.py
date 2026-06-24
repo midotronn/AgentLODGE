@@ -15,6 +15,12 @@ HOP_LENGTH = 512
 SAMPLE_RATE = FPS * HOP_LENGTH
 
 
+def _optional_int(value: str | None) -> int | None:
+    if value is None or value.strip() == "":
+        return None
+    return int(value)
+
+
 def _path(value: str | None, default: str) -> Path:
     raw = value or default
     return Path(raw).expanduser().resolve()
@@ -33,6 +39,8 @@ class Settings:
     lodge_global_weights_path: Path
     edge_weights_path: Path
     lodge_genre: str
+    min_audio_seconds: float
+    max_edge_slices: int | None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -59,6 +67,8 @@ class Settings:
                 os.getenv("EDGE_WEIGHTS_PATH"), "../Runs/EDGE/checkpoint.pt"
             ),
             lodge_genre=os.getenv("LODGE_GENRE", "Hiphop"),
+            min_audio_seconds=float(os.getenv("AGENTLODGE_MIN_AUDIO_SECONDS", "20")),
+            max_edge_slices=_optional_int(os.getenv("AGENTLODGE_MAX_EDGE_SLICES", "7")),
         )
 
     @classmethod
@@ -83,6 +93,8 @@ class Settings:
                 data.get("edge_weights_path"), "../Runs/EDGE/checkpoint.pt"
             ),
             lodge_genre=data.get("lodge_genre", "Hiphop"),
+            min_audio_seconds=float(data.get("min_audio_seconds", 20)),
+            max_edge_slices=data.get("max_edge_slices"),
         )
 
     def validate_image_backend(self) -> None:

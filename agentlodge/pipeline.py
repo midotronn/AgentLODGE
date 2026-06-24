@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import tempfile
 import traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -13,13 +14,15 @@ from pathlib import Path
 import numpy as np
 
 from agentlodge.agent.selector import SelectionResult, select_dance
-from agentlodge.audio.preprocess import PreprocessedAudio, preprocess_audio
-from agentlodge.config import Settings
-from agentlodge.dance.edge import EdgeResult, generate_edge_dance
+from agentlodge.audio.preprocess import PreprocessedAudio, preprocess_audio, release_torch_memory
+from agentlodge.config import FPS, Settings
 from agentlodge.dance.format import ensure_lodge139
-from agentlodge.dance.lodge import LodgeResult, generate_lodge_dance
 from agentlodge.dance.metrics import DanceMetrics, compute_metrics
 from agentlodge.image.costume import generate_costume_image
+from agentlodge.subprocess_runner import (
+    run_edge_inference_subprocess,
+    run_lodge_inference_subprocess,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,13 +52,23 @@ def _run_lodge_job(
     work_dir: str,
 ) -> dict:
     settings = Settings.from_dict(settings_dict)
+    work = Path(work_dir).resolve()
+    work.mkdir(parents=True, exist_ok=True)
+    features_path = (work / "lodge_features.npy").resolve()
+    output_path = (work / "lodge_motion.npy").resolve()
+    np.save(features_path, lodge_features)
     try:
-        result = generate_lodge_dance(
-            lodge_features,
-            settings,
-            Path(work_dir),
+        summary = run_lodge_inference_subprocess(
+            settings.lodge_code_path.resolve(),
+            settings.lodge_weights_path.resolve(),
+            settings.lodge_global_weights_path.resolve(),
+            settings.lodge_genre,
+            features_path,
+            output_path,
+            work,
         )
-        return {"motion": result.motion, "summary": result.summary, "error": None}
+        motion = np.load(output_path)
+        return {"motion": motion, "summary": summary, "error": None}
     except Exception as exc:
         return {
             "motion": None,
@@ -71,20 +84,112 @@ def _run_edge_job(
     work_dir: str,
 ) -> dict:
     settings = Settings.from_dict(settings_dict)
+    work = Path(work_dir).resolve()
+    work.mkdir(parents=True, exist_ok=True)
+    features_path = (work / "edge_features.npy").resolve()
+    output_path = (work / "edge_motion.npy").resolve()
+    np.save(features_path, np.array(edge_slices))
+
+    num_clips = len(edge_slices)
+    overlap_seconds = 2.5
+    clip_seconds = 5.0
+    expected_frames = int(
+        clip_seconds * FPS + (num_clips - 1) * overlap_seconds * FPS
+    )
     try:
-        result = generate_edge_dance(
-            Path(wav_path),
-            edge_slices,
-            settings,
-            Path(work_dir),
+        run_edge_inference_subprocess(
+            settings.edge_code_path.resolve(),
+            settings.edge_weights_path.resolve(),
+            work,
+            features_path,
+            output_path,
         )
-        return {"motion": result.motion, "summary": result.summary, "error": None}
+        motion = np.load(output_path).astype(np.float32)
+        if motion.shape[0] > expected_frames:
+            motion = motion[:expected_frames]
+        summary = (
+            f"EDGE long-form pipeline with {num_clips} chained 5s clips "
+            f"and 2.5s overlap; output length {motion.shape[0]} frames."
+        )
+        return {"motion": motion, "summary": summary, "error": None}
     except Exception as exc:
         return {
             "motion": None,
             "summary": "",
             "error": f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}",
         }
+
+
+def _use_parallel_execution() -> bool:
+    mode = os.getenv("AGENTLODGE_PARALLEL", "auto").lower()
+    if mode in {"0", "false", "no"}:
+        return False
+    if mode in {"1", "true", "yes"}:
+        return True
+    try:
+        import torch
+
+        return torch.cuda.is_available()
+    except ImportError:
+        return False
+
+
+def _run_generators(
+    preprocessed: PreprocessedAudio,
+    settings: Settings,
+    settings_dict: dict,
+    work_root: Path,
+) -> tuple[GenerationOutcome, GenerationOutcome]:
+    lodge_out = GenerationOutcome()
+    edge_out = GenerationOutcome()
+
+    if _use_parallel_execution():
+        logger.info("Running Lodge++ and EDGE generation in parallel...")
+        with ProcessPoolExecutor(max_workers=2) as executor:
+            futures = {
+                executor.submit(
+                    _run_lodge_job,
+                    preprocessed.lodge_features,
+                    settings_dict,
+                    str(work_root / "lodge"),
+                ): "lodge",
+                executor.submit(
+                    _run_edge_job,
+                    str(preprocessed.wav_path),
+                    preprocessed.edge_feature_slices or [],
+                    settings_dict,
+                    str(work_root),
+                ): "edge",
+            }
+            for future in as_completed(futures):
+                name = futures[future]
+                payload = future.result()
+                outcome = lodge_out if name == "lodge" else edge_out
+                outcome.motion = payload["motion"]
+                outcome.summary = payload["summary"]
+                outcome.error = payload["error"]
+    else:
+        logger.info("Running Lodge++ and EDGE generation sequentially...")
+        for name, runner in (
+            ("lodge", lambda: _run_lodge_job(
+                preprocessed.lodge_features,
+                settings_dict,
+                str(work_root / "lodge"),
+            )),
+            ("edge", lambda: _run_edge_job(
+                str(preprocessed.wav_path),
+                preprocessed.edge_feature_slices or [],
+                settings_dict,
+                str(work_root),
+            )),
+        ):
+            payload = runner()
+            outcome = lodge_out if name == "lodge" else edge_out
+            outcome.motion = payload["motion"]
+            outcome.summary = payload["summary"]
+            outcome.error = payload["error"]
+
+    return lodge_out, edge_out
 
 
 def _settings_to_dict(settings: Settings) -> dict:
@@ -100,6 +205,8 @@ def _settings_to_dict(settings: Settings) -> dict:
         "lodge_global_weights_path": str(settings.lodge_global_weights_path),
         "edge_weights_path": str(settings.edge_weights_path),
         "lodge_genre": settings.lodge_genre,
+        "min_audio_seconds": settings.min_audio_seconds,
+        "max_edge_slices": settings.max_edge_slices,
     }
 
 
@@ -110,51 +217,87 @@ def run_pipeline(
     settings: Settings | None = None,
 ) -> PipelineResult:
     settings = settings or Settings.from_env()
-    out_dir = Path(output_dir or settings.output_dir)
+    out_dir = Path(output_dir or settings.output_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     errors: list[str] = []
-    work_root = Path(tempfile.mkdtemp(prefix="agentlodge_", dir=out_dir))
+    work_root = Path(tempfile.mkdtemp(prefix="agentlodge_", dir=out_dir)).resolve()
 
-    logger.info("Preprocessing audio...")
-    preprocessed = preprocess_audio(audio_path, settings, work_root)
+    audio_path = Path(audio_path).resolve()
+    if not audio_path.exists():
+        raise FileNotFoundError(f"Audio file not found: {audio_path}")
+
+    logger.info("Preprocessing audio (Lodge features)...")
+    preprocessed = preprocess_audio(
+        audio_path, settings, work_root, extract_edge=False
+    )
+    if preprocessed.metadata.duration_seconds < settings.min_audio_seconds:
+        raise ValueError(
+            f"Audio is {preprocessed.metadata.duration_seconds:.1f}s; "
+            f"Lodge++ requires at least {settings.min_audio_seconds:.0f}s "
+            "(two 256-frame local windows)."
+        )
+    if preprocessed.lodge_features.shape[0] // 256 < 2:
+        raise ValueError(
+            "Audio is too short for Lodge++ fine diffusion. "
+            f"Need at least {settings.min_audio_seconds:.0f}s of music."
+        )
 
     settings_dict = _settings_to_dict(settings)
-    lodge_out = GenerationOutcome()
-    edge_out = GenerationOutcome()
+    lodge_out = _run_lodge_job(
+        preprocessed.lodge_features,
+        settings_dict,
+        str(work_root / "lodge"),
+    )
+    lodge_result = GenerationOutcome(
+        motion=lodge_out["motion"],
+        summary=lodge_out["summary"],
+        error=lodge_out["error"],
+    )
+    release_torch_memory()
 
-    logger.info("Running Lodge++ and EDGE generation in parallel...")
-    with ProcessPoolExecutor(max_workers=2) as executor:
-        futures = {
-            executor.submit(
-                _run_lodge_job,
-                preprocessed.lodge_features,
-                settings_dict,
-                str(work_root / "lodge"),
-            ): "lodge",
-            executor.submit(
-                _run_edge_job,
-                str(preprocessed.wav_path),
-                preprocessed.edge_feature_slices or [],
-                settings_dict,
-                str(work_root / "edge"),
-            ): "edge",
-        }
-        for future in as_completed(futures):
-            name = futures[future]
-            payload = future.result()
-            outcome = lodge_out if name == "lodge" else edge_out
-            outcome.motion = payload["motion"]
-            outcome.summary = payload["summary"]
-            outcome.error = payload["error"]
-            if payload["error"]:
-                errors.append(f"{name} generation failed: {payload['error']}")
-                logger.error("%s generation failed: %s", name, payload["error"])
+    logger.info("Preprocessing audio (EDGE Jukebox features)...")
+    try:
+        edge_preprocessed = preprocess_audio(
+            preprocessed.wav_path,
+            settings,
+            work_root,
+            extract_lodge=False,
+            extract_edge=True,
+        )
+        preprocessed.edge_feature_slices = edge_preprocessed.edge_feature_slices
+    except Exception as exc:
+        msg = f"EDGE preprocessing failed: {exc}"
+        errors.append(msg)
+        logger.error(msg)
+        edge_preprocessed = None
+    release_torch_memory()
+
+    edge_result = GenerationOutcome()
+    if preprocessed.edge_feature_slices:
+        edge_out = _run_edge_job(
+            str(preprocessed.wav_path),
+            preprocessed.edge_feature_slices,
+            settings_dict,
+            str(work_root),
+        )
+        edge_result = GenerationOutcome(
+            motion=edge_out["motion"],
+            summary=edge_out["summary"],
+            error=edge_out["error"],
+        )
+        release_torch_memory()
+
+    lodge_out = lodge_result
+    edge_out = edge_result
+    for name, outcome in (("lodge", lodge_out), ("edge", edge_out)):
+        if outcome.error:
+            errors.append(f"{name} generation failed: {outcome.error}")
+            logger.error("%s generation failed: %s", name, outcome.error)
 
     if lodge_out.motion is None and edge_out.motion is None:
         raise RuntimeError(
-            "Both Lodge++ and EDGE generation failed.\n"
-            + "\n".join(errors)
+            "Both Lodge++ and EDGE generation failed.\n" + "\n".join(errors)
         )
 
     lodge_metrics = None

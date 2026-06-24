@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 
 from agentlodge.config import Settings
+from agentlodge.env_paths import lodge_import_paths, use_code_paths
 
 
 @dataclass
@@ -27,6 +28,17 @@ def _resolve_device():
     if torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
+
+
+def _music_segment(fea_full: np.ndarray, gi: int, length1: int) -> np.ndarray:
+    start = gi * length1
+    end = (gi + 1) * length1
+    if end <= fea_full.shape[0]:
+        return fea_full[start:end]
+    if fea_full.shape[0] >= length1:
+        return fea_full[-length1:]
+    reps = int(np.ceil(length1 / fea_full.shape[0]))
+    return np.tile(fea_full, (reps, 1))[:length1]
 
 
 def _load_modata(keymopath: str, device):
@@ -64,182 +76,186 @@ def generate_lodge_dance(
     if not lodge_root.exists():
         raise FileNotFoundError(f"LODGE codebase not found at {lodge_root}")
 
+    work_dir.mkdir(parents=True, exist_ok=True)
     os.chdir(lodge_root)
-    sys.path.insert(0, str(lodge_root))
+    paths = lodge_import_paths(lodge_root)
+    with use_code_paths(*paths):
+        import glob
+        import torch
+        from omegaconf import OmegaConf
 
-    import glob
-    import torch
-    from omegaconf import OmegaConf
+        from concat_res import concat_res
+        from dld.config import parse_args
+        from dld.data.FineDance_dataset import Genres_fd
+        from dld.data.get_data import get_datasets
+        from dld.models.get_model import get_module
+        from dld.utils.logger import create_logger
 
-    from concat_res import concat_res
-    from dld.config import parse_args
-    from dld.data.FineDance_dataset import Genres_fd
-    from dld.data.get_data import get_datasets
-    from dld.models.get_model import get_module
-    from dld.utils.logger import create_logger
+        old_argv = sys.argv
+        sys.argv = [
+            "lodge",
+            "--cfg",
+            str(lodge_root / "configs/infer_local.yaml"),
+            "--cfg_assets",
+            str(lodge_root / "configs/data/assets.yaml"),
+            "--soft",
+            "1.0",
+        ]
+        try:
+            cfg = parse_args(phase="demo")
+        finally:
+            sys.argv = old_argv
+        cfg.FOLDER = str(work_dir / "lodge_experiments")
+        cfg.Name = "agentlodge"
+        cfg.length1 = 1024
+        cfg.length2 = 256
+        cfg.checkpoint1 = str(settings.lodge_global_weights_path)
+        cfg.checkpoint2 = str(settings.lodge_weights_path)
+        cfg.DEMO.RENDER = False
+        cfg.DEMO.use_cached_features = False
+        Path(cfg.FOLDER).mkdir(parents=True, exist_ok=True)
 
-    old_argv = sys.argv
-    sys.argv = [
-        "lodge",
-        "--cfg",
-        str(lodge_root / "configs/infer_local.yaml"),
-        "--cfg_assets",
-        str(lodge_root / "configs/data/assets.yaml"),
-        "--soft",
-        "1.0",
-    ]
-    try:
-        cfg = parse_args(phase="demo")
-    finally:
-        sys.argv = old_argv
-    cfg.FOLDER = str(work_dir / "lodge_experiments")
-    cfg.Name = "agentlodge"
-    cfg.length1 = 1024
-    cfg.length2 = 256
-    cfg.checkpoint1 = str(settings.lodge_global_weights_path)
-    cfg.checkpoint2 = str(settings.lodge_weights_path)
-    cfg.DEMO.RENDER = False
-    cfg.DEMO.use_cached_features = False
-
-    cfg_coarse = OmegaConf.load(
-        str(lodge_root / "exp/Global_Module/FineDance_Global/global_train.yaml")
-    )
-    cfg_coarse.DATASET = cfg.DATASET
-    cfg_coarse.TRAIN.DATASETS = cfg.TRAIN.DATASETS
-    cfg_coarse.TEST.DATASETS = cfg.TEST.DATASETS
-    cfg_coarse.Norm = cfg.Norm
-    cfg_coarse.DEBUG = cfg.DEBUG
-    cfg_coarse.TRAIN.NUM_WORKERS = 0
-    cfg_coarse.TEST.NUM_WORKERS = 0
-
-    device = _resolve_device()
-    logger, _ = create_logger(cfg, phase="demo")
-    output_dir = Path(cfg.FOLDER) / str(cfg.model.model_type) / str(cfg.NAME) / "samples"
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    dataset = get_datasets(cfg, logger=logger, phase="test")[0]
-
-    model_coarse = get_module(cfg_coarse, dataset)
-    state_dict = torch.load(cfg.checkpoint1, map_location="cpu", weights_only=False)[
-        "state_dict"
-    ]
-    model_coarse.load_state_dict(state_dict, strict=True)
-    model_coarse.to(device).eval()
-
-    model_fine = get_module(cfg, dataset)
-    state_dict = torch.load(cfg.checkpoint2, map_location="cpu", weights_only=False)[
-        "state_dict"
-    ]
-    model_fine.load_state_dict(state_dict, strict=True)
-    model_fine.to(device).eval()
-
-    music_fea_full = lodge_features.astype(np.float32)
-    local_num = music_fea_full.shape[0] // cfg.length2
-    music_fea_full = music_fea_full[: local_num * cfg.length2]
-    if local_num == 0:
-        raise ValueError("Song too short for Lodge++ generation")
-
-    global_num = local_num // int(cfg.length1 / cfg.length2)
-    if local_num % int(cfg.length1 / cfg.length2) != 0:
-        global_num += 1
-    flag = local_num % int(cfg.length1 / cfg.length2)
-
-    song_id = "custom"
-    music_fea_cat = None
-    all_filenames_cat: list[str] = []
-    for gi in range(global_num):
-        if (gi + 1) * cfg.length1 > music_fea_full.shape[0]:
-            music_fea = music_fea_full[-cfg.length1 :]
-        else:
-            music_fea = music_fea_full[gi * cfg.length1 : (gi + 1) * cfg.length1]
-        music_fea = torch.from_numpy(music_fea).float().to(device).unsqueeze(0)
-        name = f"{song_id}g{gi:03d}g"
-        if gi == 0:
-            music_fea_cat = music_fea
-            all_filenames_cat = [name]
-        else:
-            music_fea_cat = torch.cat([music_fea_cat, music_fea], dim=0)
-            all_filenames_cat.append(name)
-
-    data_tuple = None, music_fea_cat, all_filenames_cat
-    model_coarse.render_sample_ori(
-        data_tuple,
-        "global",
-        output_dir,
-        render_count=-1,
-        fk_out=output_dir,
-        render=False,
-        setmode="normal",
-        device=device,
-    )
-
-    length_fi = cfg.length2
-    length_co = cfg.length1
-    molist_cat: list = []
-    modata13_cat: list = []
-    all_localfilename_cat: list[str] = []
-
-    for rgi in range(global_num):
-        music_fea_cat = music_fea_cat.reshape(-1, length_fi, 35)
-        music_fea_cat = music_fea_cat[:local_num]
-        keymopath = os.path.join(
-            output_dir, f"global_{rgi}_{song_id}g{str(rgi).zfill(3)}g.npy"
+        cfg_coarse = OmegaConf.load(
+            str(lodge_root / "exp/Global_Module/FineDance_Global/global_train.yaml")
         )
-        modata_13 = _load_modata(keymopath, device)
-        modata_13_temp = modata_13.clone() if isinstance(modata_13, torch.Tensor) else modata_13.copy()
+        cfg_coarse.DATASET = cfg.DATASET
+        cfg_coarse.TRAIN.DATASETS = cfg.TRAIN.DATASETS
+        cfg_coarse.TEST.DATASETS = cfg.TEST.DATASETS
+        cfg_coarse.Norm = cfg.Norm
+        cfg_coarse.DEBUG = cfg.DEBUG
+        cfg_coarse.TRAIN.NUM_WORKERS = 0
+        cfg_coarse.TEST.NUM_WORKERS = 0
 
-        if rgi > 0 and rgi < (global_num - 1):
-            modata_13_temp[:8] = modata13_cat[-1][-8:]
-        elif rgi > 0 and rgi == (global_num - 1):
-            if flag != 0:
-                modata_13_temp = modata_13[
-                    modata_13.shape[0]
-                    - 8
-                    - (8 * (int(cfg.length1 / cfg.length2) - 1) * flag) :
-                ]
-            modata_13_temp[:8] = modata13_cat[-1][-8:]
+        device = _resolve_device()
+        logger, _ = create_logger(cfg, phase="demo")
+        output_dir = (
+            Path(cfg.FOLDER) / str(cfg.model.model_type) / str(cfg.NAME) / "samples"
+        )
+        output_dir.mkdir(parents=True, exist_ok=True)
 
-        modata = modata_13_temp[4:-4]
-        scale = 8 * (int(cfg.length1 / cfg.length2) - 1)
-        molist = []
-        for item in range(modata.shape[0] // scale):
-            molist.append(modata[item * scale : (item + 1) * scale])
-            all_localfilename_cat.append(
-                f"{song_id}g{str(rgi).zfill(3)}g_l{str(item).zfill(3)}"
+        dataset = get_datasets(cfg, logger=logger, phase="test")[0]
+
+        model_coarse = get_module(cfg_coarse, dataset)
+        state_dict = torch.load(
+            cfg.checkpoint1, map_location="cpu", weights_only=False
+        )["state_dict"]
+        model_coarse.load_state_dict(state_dict, strict=True)
+        model_coarse.to(device).eval()
+
+        model_fine = get_module(cfg, dataset)
+        state_dict = torch.load(
+            cfg.checkpoint2, map_location="cpu", weights_only=False
+        )["state_dict"]
+        model_fine.load_state_dict(state_dict, strict=True)
+        model_fine.to(device).eval()
+
+        music_fea_full = lodge_features.astype(np.float32)
+        local_num = music_fea_full.shape[0] // cfg.length2
+        music_fea_full = music_fea_full[: local_num * cfg.length2]
+        if local_num == 0:
+            raise ValueError("Song too short for Lodge++ generation")
+
+        global_num = local_num // int(cfg.length1 / cfg.length2)
+        if local_num % int(cfg.length1 / cfg.length2) != 0:
+            global_num += 1
+        flag = local_num % int(cfg.length1 / cfg.length2)
+
+        song_id = "custom"
+        music_fea_cat = None
+        all_filenames_cat: list[str] = []
+        for gi in range(global_num):
+            music_fea = _music_segment(music_fea_full, gi, cfg.length1)
+            music_fea = torch.from_numpy(music_fea).float().to(device).unsqueeze(0)
+            name = f"{song_id}g{gi:03d}g"
+            if gi == 0:
+                music_fea_cat = music_fea
+                all_filenames_cat = [name]
+            else:
+                music_fea_cat = torch.cat([music_fea_cat, music_fea], dim=0)
+                all_filenames_cat.append(name)
+
+        data_tuple = None, music_fea_cat, all_filenames_cat
+        model_coarse.render_sample_ori(
+            data_tuple,
+            "global",
+            output_dir,
+            render_count=-1,
+            fk_out=output_dir,
+            render=False,
+            setmode="normal",
+            device=device,
+        )
+
+        length_fi = cfg.length2
+        molist_cat: list = []
+        modata13_cat: list = []
+        all_localfilename_cat: list[str] = []
+
+        for rgi in range(global_num):
+            music_fea_cat = music_fea_cat.reshape(-1, length_fi, 35)
+            music_fea_cat = music_fea_cat[:local_num]
+            keymopath = os.path.join(
+                output_dir, f"global_{rgi}_{song_id}g{str(rgi).zfill(3)}g.npy"
             )
-        modata13_cat.append(modata_13)
-        molist_cat += molist
+            modata_13 = _load_modata(keymopath, device)
+            modata_13_temp = (
+                modata_13.clone()
+                if isinstance(modata_13, torch.Tensor)
+                else modata_13.copy()
+            )
 
-    genre_name = genre or settings.lodge_genre
-    if genre_name not in Genres_fd:
-        genre_name = "Hiphop"
-    genre_vec = torch.from_numpy(np.array(Genres_fd[genre_name])).unsqueeze(0)
+            if rgi > 0 and rgi < (global_num - 1):
+                modata_13_temp[:8] = modata13_cat[-1][-8:]
+            elif rgi > 0 and rgi == (global_num - 1):
+                if flag != 0:
+                    modata_13_temp = modata_13[
+                        modata_13.shape[0]
+                        - 8
+                        - (8 * (int(cfg.length1 / cfg.length2) - 1) * flag) :
+                    ]
+                modata_13_temp[:8] = modata13_cat[-1][-8:]
 
-    setmode = "inpaint_soft_ddim"
-    data_tuple = None, music_fea_cat, all_localfilename_cat, molist_cat
-    model_fine.render_sample(
-        data_tuple,
-        "dod",
-        output_dir,
-        render_count=-1,
-        fk_out=output_dir,
-        render=False,
-        setmode=setmode,
-        cons=molist_cat,
-        soft_hint="dod",
-        device=device,
-        genre=genre_vec,
-    )
+            modata = modata_13_temp[4:-4]
+            scale = 8 * (int(cfg.length1 / cfg.length2) - 1)
+            molist = []
+            for item in range(modata.shape[0] // scale):
+                molist.append(modata[item * scale : (item + 1) * scale])
+                all_localfilename_cat.append(
+                    f"{song_id}g{str(rgi).zfill(3)}g_l{str(item).zfill(3)}"
+                )
+            modata13_cat.append(modata_13)
+            molist_cat += molist
 
-    concat_res(str(output_dir))
-    concat_dir = output_dir / "concat" / "npy"
-    npy_files = sorted(glob.glob(str(concat_dir / "*.npy")))
-    if not npy_files:
-        raise RuntimeError(f"Lodge++ generation produced no output in {concat_dir}")
+        genre_name = genre or settings.lodge_genre
+        if genre_name not in Genres_fd:
+            genre_name = "Hiphop"
+        genre_vec = torch.from_numpy(np.array(Genres_fd[genre_name])).unsqueeze(0)
 
-    motion = np.load(npy_files[0]).astype(np.float32)
-    summary = (
-        f"Lodge++ two-stage pipeline (global choreography + PDDM) with genre={genre_name}; "
-        f"{global_num} global segments, {local_num} local windows."
-    )
-    return LodgeResult(motion=motion, summary=summary)
+        setmode = "inpaint_soft_ddim"
+        data_tuple = None, music_fea_cat, all_localfilename_cat, molist_cat
+        model_fine.render_sample(
+            data_tuple,
+            "dod",
+            output_dir,
+            render_count=-1,
+            fk_out=output_dir,
+            render=False,
+            setmode=setmode,
+            cons=molist_cat,
+            soft_hint="dod",
+            device=device,
+            genre=genre_vec,
+        )
+
+        concat_res(str(output_dir))
+        concat_dir = output_dir / "concat" / "npy"
+        npy_files = sorted(glob.glob(str(concat_dir / "*.npy")))
+        if not npy_files:
+            raise RuntimeError(f"Lodge++ generation produced no output in {concat_dir}")
+
+        motion = np.load(npy_files[0]).astype(np.float32)
+        summary = (
+            f"Lodge++ two-stage pipeline (global choreography + PDDM) with genre={genre_name}; "
+            f"{global_num} global segments, {local_num} local windows."
+        )
+        return LodgeResult(motion=motion, summary=summary)

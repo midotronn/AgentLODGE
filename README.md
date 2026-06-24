@@ -41,6 +41,24 @@ EDGE_WEIGHTS_PATH=../Runs/EDGE/checkpoint.pt
 
 Run Lodge++ and EDGE inference from their own virtual environments if dependency sets differ; the pipeline subprocesses inherit the active Python environment.
 
+## Memory and Apple Silicon notes
+
+The pipeline runs each heavy model in a **separate subprocess** and frees memory between steps to avoid system crashes:
+
+1. Lodge++ (LODGE venv subprocess)
+2. Jukebox feature extraction (EDGE venv subprocess)
+3. EDGE inference (EDGE venv subprocess)
+
+On Macs with limited unified memory, **Jukebox may be killed (OOM)** during step 2. The pipeline will still finish using the Lodge++ dance and log the failure in `pipeline_log.json`.
+
+Recommendations:
+
+- Use at least **20 seconds** of audio (`AGENTLODGE_MIN_AUDIO_SECONDS=20`) for Lodge++ fine diffusion.
+- Limit EDGE slices on memory-constrained machines: `AGENTLODGE_MAX_EDGE_SLICES=7` (default).
+- Keep `AGENTLODGE_PARALLEL=0` on Apple Silicon (default when no CUDA GPU).
+- Pre-extract Jukebox `.npy` features on a GPU machine and copy them into the work dir `edge_juke_cache/` to skip extraction.
+- Close other memory-heavy apps before running EDGE/Jukebox.
+
 ## Usage
 
 ```bash
