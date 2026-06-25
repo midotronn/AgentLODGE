@@ -31,23 +31,26 @@ def generate_costume_image(
 
 
 def _generate_openai(prompt: str, output_path: Path, api_key: str | None) -> None:
+    import os
+    import urllib.request
+
     from openai import OpenAI
 
     client = OpenAI(api_key=api_key)
-    response = client.images.generate(
-        model="dall-e-3",
-        prompt=prompt,
-        size="1024x1024",
-        quality="standard",
-        n=1,
-    )
-    image_url = response.data[0].url
-    if not image_url:
-        raise RuntimeError("OpenAI image generation returned no URL")
+    model = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1")
+    kwargs: dict = {"model": model, "prompt": prompt, "size": "1024x1024", "n": 1}
+    if model.startswith("dall-e"):
+        kwargs["quality"] = "standard"
 
-    import urllib.request
-
-    urllib.request.urlretrieve(image_url, str(output_path))
+    response = client.images.generate(**kwargs)
+    item = response.data[0]
+    if item.b64_json:
+        output_path.write_bytes(base64.b64decode(item.b64_json))
+        return
+    if item.url:
+        urllib.request.urlretrieve(item.url, str(output_path))
+        return
+    raise RuntimeError("OpenAI image generation returned no image data")
 
 
 def _generate_gemini(prompt: str, output_path: Path, api_key: str | None) -> None:

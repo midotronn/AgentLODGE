@@ -324,7 +324,7 @@ def run_pipeline(
             lodge_metrics,
             edge_metrics,
             preprocessed.metadata,
-            settings.anthropic_api_key,
+            settings.openai_api_key,
         )
         selected_model = selection.selected_model
         reasoning = selection.reasoning

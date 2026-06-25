@@ -67,20 +67,28 @@ def select_dance(
     if not api_key:
         return SelectionResult(
             selected_model="lodge",
-            reasoning="No ANTHROPIC_API_KEY configured; defaulting to Lodge++.",
+            reasoning="No OPENAI_API_KEY configured; defaulting to Lodge++.",
             used_fallback=True,
         )
 
     try:
-        import anthropic
+        import os
 
-        client = anthropic.Anthropic(api_key=api_key)
-        message = client.messages.create(
-            model="claude-sonnet-4-20250514",
+        from openai import OpenAI
+
+        client = OpenAI(api_key=api_key)
+        model = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
+        response = client.chat.completions.create(
+            model=model,
             max_tokens=300,
-            messages=[{"role": "user", "content": _build_prompt(lodge_metrics, edge_metrics, metadata)}],
+            messages=[
+                {
+                    "role": "user",
+                    "content": _build_prompt(lodge_metrics, edge_metrics, metadata),
+                }
+            ],
         )
-        text = message.content[0].text
+        text = response.choices[0].message.content or ""
         return _parse_response(text)
     except Exception as exc:
         return SelectionResult(

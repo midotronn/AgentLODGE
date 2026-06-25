@@ -6,15 +6,15 @@ End-to-end pipeline that accepts a song and a costume description, generates dan
 
 1. **Audio preprocessing** — Librosa 35-dim features (Lodge++) and Jukebox embeddings (EDGE) at 30 FPS
 2. **Parallel dance generation** — Lodge++ global+PDDM and EDGE long-form (5s clips, 2.5s overlap)
-3. **Dance selection agent** — Claude compares beat alignment, motion diversity, and song metadata
-4. **Costume image generation** — DALL-E 3 or Gemini Imagen
+3. **Dance selection agent** — OpenAI compares beat alignment, motion diversity, and song metadata
+4. **Costume image generation** — OpenAI (`gpt-image-1`) or Gemini Imagen
 
 ## Requirements
 
 - Python 3.10+
 - [Lodge++](https://li-ronghui.github.io/lodgepp) codebase and pretrained weights
 - [EDGE](https://edge-dance.github.io) codebase and checkpoint
-- API keys for Anthropic (selection) and OpenAI or Gemini (costume image)
+- API key for OpenAI (selection agent + costume image when `IMAGE_BACKEND=openai`)
 
 ## Setup
 
@@ -82,8 +82,9 @@ Written to `output_dir`:
 
 | Variable | Description |
 |----------|-------------|
-| `ANTHROPIC_API_KEY` | Claude selection agent |
-| `OPENAI_API_KEY` | Required if `IMAGE_BACKEND=openai` |
+| `OPENAI_API_KEY` | Selection agent and costume image (when `IMAGE_BACKEND=openai`) |
+| `OPENAI_CHAT_MODEL` | Chat model for selection (default: `gpt-4o-mini`) |
+| `OPENAI_IMAGE_MODEL` | Image model for costume (default: `gpt-image-1`) |
 | `GEMINI_API_KEY` | Required if `IMAGE_BACKEND=gemini` |
 | `IMAGE_BACKEND` | `openai` or `gemini` |
 | `OUTPUT_DIR` | Default output directory |

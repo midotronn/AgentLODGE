@@ -15,12 +15,12 @@ import numpy as np
 
 def pkl_to_edge151(pkl_path: Path) -> np.ndarray:
     import torch
-    from dataset.quaternion import ax_from_6v
+    from dataset.quaternion import ax_to_6v
 
     data = pickle.load(open(pkl_path, "rb"))
     trans = data["smpl_trans"].astype(np.float32)
     poses_aa = data["smpl_poses"].reshape(-1, 24, 3)
-    rot_6d = ax_from_6v(torch.from_numpy(poses_aa)).numpy().reshape(len(trans), 144)
+    rot_6d = ax_to_6v(torch.from_numpy(poses_aa)).numpy().reshape(len(trans), 144)
     contact = np.zeros((len(trans), 4), dtype=np.float32)
     return np.concatenate([trans, rot_6d, contact], axis=1)
 
