@@ -1,4 +1,4 @@
-"""Lodge++ (Global + PDDM) dance generation wrapper."""
+"""LODGE (global + PDDM) dance generation wrapper."""
 
 from __future__ import annotations
 
@@ -71,7 +71,7 @@ def generate_lodge_dance(
     *,
     genre: str | None = None,
 ) -> LodgeResult:
-    """Run Lodge++ global + local diffusion on preprocessed librosa features."""
+    """Run LODGE global + local diffusion on preprocessed librosa features."""
     lodge_root = settings.lodge_code_path
     if not lodge_root.exists():
         raise FileNotFoundError(f"LODGE codebase not found at {lodge_root}")
@@ -153,7 +153,7 @@ def generate_lodge_dance(
         local_num = music_fea_full.shape[0] // cfg.length2
         music_fea_full = music_fea_full[: local_num * cfg.length2]
         if local_num == 0:
-            raise ValueError("Song too short for Lodge++ generation")
+            raise ValueError("Song too short for LODGE generation")
 
         global_num = local_num // int(cfg.length1 / cfg.length2)
         if local_num % int(cfg.length1 / cfg.length2) != 0:
@@ -251,11 +251,11 @@ def generate_lodge_dance(
         concat_dir = output_dir / "concat" / "npy"
         npy_files = sorted(glob.glob(str(concat_dir / "*.npy")))
         if not npy_files:
-            raise RuntimeError(f"Lodge++ generation produced no output in {concat_dir}")
+            raise RuntimeError(f"LODGE generation produced no output in {concat_dir}")
 
         motion = np.load(npy_files[0]).astype(np.float32)
         summary = (
-            f"Lodge++ two-stage pipeline (global choreography + PDDM) with genre={genre_name}; "
+            f"LODGE two-stage pipeline (global choreography + PDDM) with genre={genre_name}; "
             f"{global_num} global segments, {local_num} local windows."
         )
         return LodgeResult(motion=motion, summary=summary)

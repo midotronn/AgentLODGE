@@ -28,7 +28,7 @@ Song metadata:
 - duration_seconds: {metadata.duration_seconds:.2f}
 - estimated_bpm: {metadata.bpm:.1f}
 
-Lodge++ output:
+LODGE output:
 - beat_alignment_score: {lodge_metrics.beat_alignment_score:.4f}
 - motion_diversity: {lodge_metrics.motion_diversity:.4f}
 - summary: {lodge_metrics.summary}
@@ -67,7 +67,7 @@ def select_dance(
     if not api_key:
         return SelectionResult(
             selected_model="lodge",
-            reasoning="No OPENAI_API_KEY configured; defaulting to Lodge++.",
+            reasoning="No OPENAI_API_KEY configured; defaulting to LODGE.",
             used_fallback=True,
         )
 
@@ -93,6 +93,6 @@ def select_dance(
     except Exception as exc:
         return SelectionResult(
             selected_model="lodge",
-            reasoning=f"Selection agent failed ({exc}); defaulting to Lodge++.",
+            reasoning=f"Selection agent failed ({exc}); defaulting to LODGE.",
             used_fallback=True,
         )

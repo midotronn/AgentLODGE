@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Lodge++ inference in an isolated process."""
+"""Run LODGE inference in an isolated process."""
 
 from __future__ import annotations
 

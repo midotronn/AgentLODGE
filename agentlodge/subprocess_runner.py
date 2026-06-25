@@ -79,10 +79,10 @@ def run_lodge_inference_subprocess(
         "--lodge-genre",
         lodge_genre,
     ]
-    result = _run(cmd, timeout_seconds=timeout_seconds, step="Lodge++")
-    _raise_on_failure(result, "Lodge++ inference")
+    result = _run(cmd, timeout_seconds=timeout_seconds, step="LODGE")
+    _raise_on_failure(result, "LODGE inference")
     summary_path = work_dir / "lodge_summary.txt"
-    return summary_path.read_text() if summary_path.exists() else "Lodge++ generation completed."
+    return summary_path.read_text() if summary_path.exists() else "LODGE generation completed."
 
 
 def run_jukebox_extraction(

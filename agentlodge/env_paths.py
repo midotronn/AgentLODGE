@@ -1,4 +1,4 @@
-"""Resolve companion virtualenv paths for Lodge++ and EDGE."""
+"""Resolve companion virtualenv paths for LODGE and EDGE."""
 
 from __future__ import annotations
 

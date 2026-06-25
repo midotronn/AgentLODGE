@@ -144,7 +144,7 @@ def _run_generators(
     edge_out = GenerationOutcome()
 
     if _use_parallel_execution():
-        logger.info("Running Lodge++ and EDGE generation in parallel...")
+        logger.info("Running LODGE and EDGE generation in parallel...")
         with ProcessPoolExecutor(max_workers=2) as executor:
             futures = {
                 executor.submit(
@@ -169,7 +169,7 @@ def _run_generators(
                 outcome.summary = payload["summary"]
                 outcome.error = payload["error"]
     else:
-        logger.info("Running Lodge++ and EDGE generation sequentially...")
+        logger.info("Running LODGE and EDGE generation sequentially...")
         for name, runner in (
             ("lodge", lambda: _run_lodge_job(
                 preprocessed.lodge_features,
@@ -234,12 +234,12 @@ def run_pipeline(
     if preprocessed.metadata.duration_seconds < settings.min_audio_seconds:
         raise ValueError(
             f"Audio is {preprocessed.metadata.duration_seconds:.1f}s; "
-            f"Lodge++ requires at least {settings.min_audio_seconds:.0f}s "
+            f"LODGE requires at least {settings.min_audio_seconds:.0f}s "
             "(two 256-frame local windows)."
         )
     if preprocessed.lodge_features.shape[0] // 256 < 2:
         raise ValueError(
-            "Audio is too short for Lodge++ fine diffusion. "
+            "Audio is too short for LODGE fine diffusion. "
             f"Need at least {settings.min_audio_seconds:.0f}s of music."
         )
 
@@ -297,7 +297,7 @@ def run_pipeline(
 
     if lodge_out.motion is None and edge_out.motion is None:
         raise RuntimeError(
-            "Both Lodge++ and EDGE generation failed.\n" + "\n".join(errors)
+            "Both LODGE and EDGE generation failed.\n" + "\n".join(errors)
         )
 
     lodge_metrics = None
@@ -332,10 +332,10 @@ def run_pipeline(
             errors.append(f"selection agent fallback: {reasoning}")
     elif lodge_out.motion is None:
         selected_model = "edge"
-        reasoning = "Lodge++ failed; automatically selected EDGE output."
+        reasoning = "LODGE failed; automatically selected EDGE output."
     elif edge_out.motion is None:
         selected_model = "lodge"
-        reasoning = "EDGE failed; automatically selected Lodge++ output."
+        reasoning = "EDGE failed; automatically selected LODGE output."
 
     selected_motion = lodge_out.motion if selected_model == "lodge" else edge_out.motion
     if selected_motion is None:
