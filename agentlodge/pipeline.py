@@ -22,6 +22,7 @@ from agentlodge.image.costume import generate_costume_image
 from agentlodge.subprocess_runner import (
     run_edge_inference_subprocess,
     run_lodge_inference_subprocess,
+    run_stick_video_subprocess,
 )
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,7 @@ class PipelineResult:
     edge_metrics: DanceMetrics | None = None
     song_duration_seconds: float = 0.0
     costume_description: str = ""
+    stick_figure_video: Path | None = None
     errors: list[str] = field(default_factory=list)
 
 
@@ -215,6 +217,8 @@ def run_pipeline(
     costume_description: str,
     output_dir: str | Path | None = None,
     settings: Settings | None = None,
+    *,
+    render_video: bool = True,
 ) -> PipelineResult:
     settings = settings or Settings.from_env()
     out_dir = Path(output_dir or settings.output_dir).resolve()
@@ -343,7 +347,25 @@ def run_pipeline(
         selected_model = "edge" if lodge_out.motion is None else "lodge"
 
     selected_139 = ensure_lodge139(selected_motion)
-    np.save(out_dir / "selected_dance.npy", selected_139)
+    motion_path = out_dir / "selected_dance.npy"
+    np.save(motion_path, selected_139)
+
+    stick_figure_video: Path | None = None
+    if render_video:
+        stick_figure_video = out_dir / "dance_stick_figure.mp4"
+        try:
+            run_stick_video_subprocess(
+                settings.lodge_code_path.resolve(),
+                motion_path,
+                stick_figure_video,
+                audio_path=audio_path,
+            )
+            logger.info("Saved stick figure video to %s", stick_figure_video)
+        except Exception as exc:
+            msg = f"Stick figure video render failed: {exc}"
+            errors.append(msg)
+            logger.error(msg)
+            stick_figure_video = None
 
     costume_path = out_dir / "costume_output.png"
     try:
@@ -363,6 +385,7 @@ def run_pipeline(
         "edge_diversity": edge_metrics.motion_diversity if edge_metrics else None,
         "song_duration_seconds": preprocessed.metadata.duration_seconds,
         "costume_description": costume_description,
+        "stick_figure_video": str(stick_figure_video) if stick_figure_video else None,
         "errors": errors,
     }
     (out_dir / "pipeline_log.json").write_text(json.dumps(log_payload, indent=2))
@@ -375,5 +398,6 @@ def run_pipeline(
         edge_metrics=edge_metrics,
         song_duration_seconds=preprocessed.metadata.duration_seconds,
         costume_description=costume_description,
+        stick_figure_video=stick_figure_video,
         errors=errors,
     )

@@ -32,6 +32,8 @@ print("selected_dance.npy shape:", d.shape)
 assert d.shape[1] == 139
 img = out / "costume_output.png"
 print("costume_output.png:", "OK" if img.exists() and img.stat().st_size > 1000 else "MISSING (API key?)")
+video = out / "dance_stick_figure.mp4"
+print("dance_stick_figure.mp4:", "OK" if video.exists() and video.stat().st_size > 1000 else "MISSING")
 PY
 
 echo "Done at $(date)" | tee -a "$LOG"

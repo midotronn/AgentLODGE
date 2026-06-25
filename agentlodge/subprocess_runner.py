@@ -134,3 +134,33 @@ def run_edge_inference_subprocess(
     result = _run(cmd, timeout_seconds=timeout_seconds, step="EDGE")
     _raise_on_failure(result, "EDGE inference")
 
+
+def run_stick_video_subprocess(
+    lodge_code_path: Path,
+    motion_npy: Path,
+    output_mp4: Path,
+    *,
+    audio_path: Path | None = None,
+    smpl_joint_path: Path | None = None,
+    timeout_seconds: int | None = None,
+) -> None:
+    python = _venv_python(lodge_code_path, "LODGE")
+    cmd = [
+        str(python),
+        str(SCRIPTS_DIR / "render_stick_video.py"),
+        "--agentlodge-root",
+        str(AGENTLODGE_ROOT),
+        "--motion-npy",
+        str(motion_npy),
+        "--output-mp4",
+        str(output_mp4),
+        "--lodge-code-path",
+        str(lodge_code_path),
+    ]
+    if audio_path is not None:
+        cmd.extend(["--audio", str(audio_path)])
+    if smpl_joint_path is not None:
+        cmd.extend(["--smpl-joint-path", str(smpl_joint_path)])
+    result = _run(cmd, timeout_seconds=timeout_seconds, step="stick figure video")
+    _raise_on_failure(result, "Stick figure video render")
+

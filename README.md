@@ -7,13 +7,15 @@ End-to-end pipeline that accepts a song and a costume description, generates dan
 1. **Audio preprocessing** — Librosa 35-dim features (LODGE) and Jukebox embeddings (EDGE) at 30 FPS
 2. **Parallel dance generation** — LODGE global+PDDM and EDGE long-form (5s clips, 2.5s overlap)
 3. **Dance selection agent** — OpenAI compares beat alignment, motion diversity, and song metadata
-4. **Costume image generation** — OpenAI (`gpt-image-1`) or Gemini Imagen
+4. **Stick-figure video** — SMPL forward kinematics + matplotlib animation, muxed with input audio
+5. **Costume image generation** — OpenAI (`gpt-image-1`) or Gemini Imagen
 
 ## Requirements
 
 - Python 3.10+
 - [LODGE](https://li-ronghui.github.io/lodgepp) codebase and pretrained weights
 - [EDGE](https://edge-dance.github.io) codebase and checkpoint
+- `ffmpeg` on PATH (stick-figure video export)
 - API key for OpenAI (selection agent + costume image when `IMAGE_BACKEND=openai`)
 
 ## Setup
@@ -75,8 +77,22 @@ Written to `output_dir`:
 | File | Description |
 |------|-------------|
 | `selected_dance.npy` | Selected motion array `(L, 139)` in SMPL format |
+| `dance_stick_figure.mp4` | Stick-figure animation of the selected dance, with input audio |
 | `costume_output.png` | Generated costume illustration |
 | `pipeline_log.json` | Selection reasoning, metrics, and errors |
+
+You can also render a saved motion file directly:
+
+```bash
+python scripts/render_stick_video.py \
+  --agentlodge-root . \
+  --motion-npy outputs/run/selected_dance.npy \
+  --output-mp4 outputs/run/dance_stick_figure.mp4 \
+  --lodge-code-path ../Runs/LODGE \
+  --audio path/to/song.wav
+```
+
+Stick-figure rendering needs `LODGE/data/smplx_neu_J_1.npy` (same file LODGE uses for FK).
 
 ## Configuration
 
@@ -101,6 +117,7 @@ Written to `output_dir`:
 - EDGE failure → falls back to LODGE
 - Both fail → `RuntimeError`
 - Image generation failure → logged; dance output still saved
+- Stick figure video failure → logged; motion and costume outputs still saved
 - Selection agent failure → defaults to LODGE
 
 ## License
