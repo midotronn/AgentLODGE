@@ -5,6 +5,13 @@ set -euo pipefail
 WORK="${WORKSPACE:-/workspace}"
 cd "$WORK"
 
+echo "=== System packages (ffmpeg for stick-figure video) ==="
+if command -v apt-get >/dev/null 2>&1; then
+  apt-get update -qq
+  apt-get install -y -qq ffmpeg libsndfile1 >/dev/null || true
+fi
+ffmpeg -version | head -1 || echo "WARNING: ffmpeg not found; stick-figure mp4 export will fail"
+
 echo "=== System check ==="
 nvidia-smi || { echo "ERROR: no GPU"; exit 1; }
 free -h
@@ -20,14 +27,19 @@ if [ "$DISK_FREE" -lt 40 ]; then
   echo "WARNING: less than 40GB free on $WORK"
 fi
 
-echo "=== Clone repos ==="
+echo "=== Clone / update repos ==="
 [ -d AgentLODGE ] || git clone https://github.com/midotronn/AgentLODGE.git
 [ -d LODGE ] || git clone https://github.com/li-ronghui/LODGE.git
 [ -d EDGE ] || git clone https://github.com/Stanford-TML/EDGE.git
+( cd AgentLODGE && git pull --ff-only )
+( cd LODGE && git pull --ff-only || true )
+( cd EDGE && git pull --ff-only || true )
 
 echo "=== Python venv (shared) ==="
 cd "$WORK/AgentLODGE"
-python3 -m venv .venv
+if [ ! -d .venv ]; then
+  python3 -m venv .venv
+fi
 source .venv/bin/activate
 pip install -U pip wheel setuptools
 
@@ -47,6 +59,17 @@ pip install accelerate wandb smplx jukemirlib 2>/dev/null || pip install git+htt
 ln -sfn "$WORK/AgentLODGE/.venv" "$WORK/LODGE/.venv"
 ln -sfn "$WORK/AgentLODGE/.venv" "$WORK/EDGE/.venv"
 
+echo "=== LODGE config + patches ==="
+mkdir -p "$WORK/LODGE/configs" "$WORK/LODGE/data"
+cp -f "$WORK/AgentLODGE/scripts/lodge_infer_local.yaml" "$WORK/LODGE/configs/infer_local.yaml"
+LODGE_CODE_PATH="$WORK/LODGE" python3 "$WORK/AgentLODGE/scripts/patch_lodge_pod.py"
+
+SMPL_J="$WORK/LODGE/data/smplx_neu_J_1.npy"
+if [ ! -f "$SMPL_J" ]; then
+  echo "WARNING: missing $SMPL_J (needed for stick-figure video FK)"
+  echo "  Copy from your local Runs/LODGE/data/ or create a symlink after LODGE data download."
+fi
+
 echo "=== Download checkpoints ==="
 cd "$WORK/LODGE"
 if [ ! -f "exp/Local_Module/FineDance_FineTuneV2_Local/checkpoints/epoch=299.ckpt" ]; then
@@ -65,6 +88,10 @@ fi
 
 echo "=== AgentLODGE .env ==="
 cd "$WORK/AgentLODGE"
+if [ -f .env ] && [ -z "${OPENAI_API_KEY:-}" ]; then
+  EXISTING_KEY=$(grep -E '^OPENAI_API_KEY=' .env | cut -d= -f2- || true)
+  OPENAI_API_KEY="${EXISTING_KEY:-}"
+fi
 cat > .env <<EOF
 OUTPUT_DIR=$WORK/AgentLODGE/outputs
 LODGE_CODE_PATH=$WORK/LODGE
@@ -98,4 +125,5 @@ else:
 PY
 
 echo "=== Bootstrap complete ==="
-echo "Run: cd $WORK/AgentLODGE && source .venv/bin/activate && bash scripts/runpod_e2e.sh"
+echo "Set OPENAI_API_KEY in .env if not already set."
+echo "Run: cd $WORK/AgentLODGE && source .venv/bin/activate && bash scripts/runpod_e2e.sh test_audio_30s.wav outputs/runpod_e2e12"
