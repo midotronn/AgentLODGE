@@ -16,7 +16,6 @@ echo "Starting e2e at $(date)" | tee "$LOG"
 AGENTLODGE_PARALLEL=0 \
 python run_pipeline.py \
   --audio "$AUDIO" \
-  --costume "a flowing red ballgown with silver embroidery" \
   --output_dir "$OUT" 2>&1 | tee -a "$LOG"
 
 echo "--- Results ---" | tee -a "$LOG"

@@ -1,6 +1,6 @@
 # AgentLODGE
 
-End-to-end pipeline that accepts a song and a costume description, generates dances with **LODGE** and **EDGE** in parallel, selects the best result with an LLM agent, and generates a costume illustration.
+End-to-end pipeline that accepts a song, generates dances with **LODGE** and **EDGE** in parallel, selects the best result with an LLM agent, and generates a costume illustration derived entirely from the audio.
 
 ## Pipeline
 
@@ -8,7 +8,8 @@ End-to-end pipeline that accepts a song and a costume description, generates dan
 2. **Parallel dance generation** — LODGE global+PDDM and EDGE long-form (5s clips, 2.5s overlap)
 3. **Dance selection agent** — OpenAI compares beat alignment, motion diversity, and song metadata
 4. **Stick-figure video** — SMPL forward kinematics + matplotlib animation, muxed with input audio
-5. **Costume image generation** — OpenAI (`gpt-image-1`) or Gemini Imagen
+5. **Costume description agent** — an LLM turns the song's acoustic features (tempo, energy, timbre, key/mode, rhythmic density) plus the `LODGE_GENRE` hint into a costume description
+6. **Costume image generation** — OpenAI (`gpt-image-1`) or Gemini Imagen renders the audio-derived description
 
 ## Requirements
 
@@ -16,7 +17,7 @@ End-to-end pipeline that accepts a song and a costume description, generates dan
 - [LODGE](https://li-ronghui.github.io/lodgepp) codebase and pretrained weights
 - [EDGE](https://edge-dance.github.io) codebase and checkpoint
 - `ffmpeg` on PATH (stick-figure video export)
-- API key for OpenAI (selection agent + costume image when `IMAGE_BACKEND=openai`)
+- API key for OpenAI (selection agent, **costume description agent**, and costume image when `IMAGE_BACKEND=openai`). Because the costume description always uses OpenAI chat, `OPENAI_API_KEY` is required for costume generation even when `IMAGE_BACKEND=gemini`.
 
 ## Setup
 
@@ -66,9 +67,11 @@ Recommendations:
 ```bash
 python run_pipeline.py \
   --audio path/to/song.wav \
-  --costume "a flowing red ballgown with silver embroidery" \
   --output_dir ./outputs
 ```
+
+The costume is derived automatically from the input audio — there is no costume text
+argument. The generated description is printed and saved to `pipeline_log.json`.
 
 ## Outputs
 
@@ -98,8 +101,8 @@ Stick-figure rendering needs `LODGE/data/smplx_neu_J_1.npy` (same file LODGE use
 
 | Variable | Description |
 |----------|-------------|
-| `OPENAI_API_KEY` | Selection agent and costume image (when `IMAGE_BACKEND=openai`) |
-| `OPENAI_CHAT_MODEL` | Chat model for selection (default: `gpt-4o-mini`) |
+| `OPENAI_API_KEY` | Selection agent, costume description agent, and costume image (when `IMAGE_BACKEND=openai`). Required for costume generation even under `IMAGE_BACKEND=gemini`. |
+| `OPENAI_CHAT_MODEL` | Chat model for the selection and costume description agents (default: `gpt-4o-mini`) |
 | `OPENAI_IMAGE_MODEL` | Image model for costume (default: `gpt-image-1`) |
 | `GEMINI_API_KEY` | Required if `IMAGE_BACKEND=gemini` |
 | `IMAGE_BACKEND` | `openai` or `gemini` |
@@ -109,13 +112,14 @@ Stick-figure rendering needs `LODGE/data/smplx_neu_J_1.npy` (same file LODGE use
 | `LODGE_WEIGHTS_PATH` | Local (PDDM) checkpoint |
 | `LODGE_GLOBAL_WEIGHTS_PATH` | Global choreography checkpoint |
 | `EDGE_WEIGHTS_PATH` | EDGE model checkpoint |
-| `LODGE_GENRE` | FineDance genre label (default: `Hiphop`) |
+| `LODGE_GENRE` | FineDance genre label, also used as a costume style hint (default: `Hiphop`) |
 
 ## Error handling
 
 - LODGE failure → falls back to EDGE
 - EDGE failure → falls back to LODGE
 - Both fail → `RuntimeError`
+- Costume description agent failure (e.g. missing `OPENAI_API_KEY`) → logged; costume image skipped, dance outputs still saved
 - Image generation failure → logged; dance output still saved
 - Stick figure video failure → logged; motion and costume outputs still saved
 - Selection agent failure → defaults to LODGE

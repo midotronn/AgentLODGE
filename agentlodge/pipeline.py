@@ -13,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
+from agentlodge.agent.costume_describer import describe_costume
 from agentlodge.agent.selector import SelectionResult, select_dance
 from agentlodge.audio.preprocess import PreprocessedAudio, preprocess_audio, release_torch_memory
 from agentlodge.config import FPS, Settings
@@ -214,7 +215,6 @@ def _settings_to_dict(settings: Settings) -> dict:
 
 def run_pipeline(
     audio_path: str | Path,
-    costume_description: str,
     output_dir: str | Path | None = None,
     settings: Settings | None = None,
     *,
@@ -367,8 +367,17 @@ def run_pipeline(
             logger.error(msg)
             stick_figure_video = None
 
+    costume_description = ""
     costume_path = out_dir / "costume_output.png"
     try:
+        if preprocessed.audio_descriptor is None:
+            raise RuntimeError("Audio descriptor unavailable for costume generation")
+        costume_description = describe_costume(
+            preprocessed.audio_descriptor,
+            settings.openai_api_key,
+            genre=settings.lodge_genre,
+        )
+        logger.info("Audio-derived costume description: %s", costume_description)
         generate_costume_image(costume_description, costume_path, settings)
         logger.info("Saved costume image to %s", costume_path)
     except Exception as exc:
@@ -376,6 +385,7 @@ def run_pipeline(
         errors.append(msg)
         logger.error(msg)
 
+    descriptor = preprocessed.audio_descriptor
     log_payload = {
         "selected_model": selected_model,
         "selection_reasoning": reasoning,
@@ -385,6 +395,17 @@ def run_pipeline(
         "edge_diversity": edge_metrics.motion_diversity if edge_metrics else None,
         "song_duration_seconds": preprocessed.metadata.duration_seconds,
         "costume_description": costume_description,
+        "audio_features": {
+            "bpm": descriptor.bpm,
+            "tempo_feel": descriptor.tempo_feel,
+            "energy_level": descriptor.energy_level,
+            "brightness": descriptor.brightness,
+            "rhythmic_density": descriptor.rhythmic_density,
+            "key": f"{descriptor.key} {descriptor.mode}",
+            "mood": descriptor.mood,
+        }
+        if descriptor
+        else None,
         "stick_figure_video": str(stick_figure_video) if stick_figure_video else None,
         "errors": errors,
     }

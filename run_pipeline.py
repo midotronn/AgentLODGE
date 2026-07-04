@@ -17,11 +17,6 @@ def main() -> int:
     )
     parser.add_argument("--audio", required=True, help="Path to input .wav or .mp3")
     parser.add_argument(
-        "--costume",
-        required=True,
-        help="Text description of the desired costume",
-    )
-    parser.add_argument(
         "--output_dir",
         default=None,
         help="Output directory (defaults to OUTPUT_DIR env var or ./outputs)",
@@ -42,7 +37,6 @@ def main() -> int:
     try:
         result = run_pipeline(
             audio_path=args.audio,
-            costume_description=args.costume,
             output_dir=args.output_dir,
             settings=settings,
             render_video=not args.skip_video,
@@ -53,6 +47,8 @@ def main() -> int:
 
     print(f"Selected model: {result.selected_model}")
     print(f"Reasoning: {result.selection_reasoning}")
+    if result.costume_description:
+        print(f"Costume (from audio): {result.costume_description}")
     print(f"Outputs saved to: {result.output_dir}")
     if result.stick_figure_video:
         print(f"Stick figure video: {result.stick_figure_video}")

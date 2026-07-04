@@ -1,4 +1,9 @@
-"""Costume image generation via OpenAI or Gemini."""
+"""Costume image generation via OpenAI or Gemini.
+
+The ``costume_description`` is produced upstream by the audio-driven costume
+describer agent (see :mod:`agentlodge.agent.costume_describer`); this module only
+renders the illustration and is agnostic to how the text was obtained.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +14,7 @@ from agentlodge.config import Settings
 
 
 def build_costume_prompt(costume_description: str) -> str:
+    """Wrap an (audio-derived) costume description in an illustration prompt."""
     return (
         "Full-body fashion illustration of a dancer wearing: "
         f"{costume_description}. Studio lighting, clean white background, high detail."
