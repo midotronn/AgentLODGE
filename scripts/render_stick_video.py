@@ -4,8 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
+
+# LODGE modules pulled in for FK may import pyrender/OpenGL; force headless OSMesa.
+os.environ.setdefault("PYOPENGL_PLATFORM", "osmesa")
 
 
 def main() -> int:

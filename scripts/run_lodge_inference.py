@@ -4,8 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
+
+# LODGE imports pyrender (via render.py) at import time; force the headless OSMesa
+# platform so PyOpenGL loads without a display. Respect an explicit override.
+os.environ.setdefault("PYOPENGL_PLATFORM", "osmesa")
 
 
 def main() -> int:

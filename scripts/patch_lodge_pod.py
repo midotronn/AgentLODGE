@@ -27,15 +27,32 @@ if old in text:
 else:
     print("Local_Module already patched or pattern missing")
 
-# Global/Local modules: weights_only=False for normalizer pickle
+# Global/Local modules: weights_only=False for normalizer pickle (kwarg must go INSIDE torch.load)
 for name in ("Global_Module.py", "Local_Module.py"):
     path = LODGE / "dld/models/modeltype" / name
     body = path.read_text()
+    # Repair a previously mis-applied patch that placed the kwarg outside torch.load(),
+    # which produced a SyntaxError (`torch.load(...)), weights_only=False`).
+    broken = 'normalizer")), weights_only=False'
+    if broken in body:
+        path.write_text(body.replace(broken, 'normalizer"), weights_only=False)'))
+        print(f"repaired {name} torch.load kwarg placement")
+        continue
     needle = 'torch.load(eval(f"cfg.DATASET.{dataname.upper()}.normalizer"))'
-    repl = needle + ", weights_only=False"
+    repl = 'torch.load(eval(f"cfg.DATASET.{dataname.upper()}.normalizer"), weights_only=False)'
     if needle in body and repl not in body:
         path.write_text(body.replace(needle, repl))
         print(f"patched {name} torch.load")
+
+# Replace the upstream author's hardcoded absolute SMPLX joint path with the local
+# relative one (LODGE inference runs with cwd = LODGE root, so 'data/...' resolves).
+ABS_JPATH = "/data2/lrh/project/dance/Lodge/lodge_pub/data/smplx_neu_J_1.npy"
+REL_JPATH = "data/smplx_neu_J_1.npy"
+for py in LODGE.rglob("*.py"):
+    body = py.read_text()
+    if ABS_JPATH in body:
+        py.write_text(body.replace(ABS_JPATH, REL_JPATH))
+        print(f"patched absolute Jpath in {py.relative_to(LODGE)}")
 
 # smplfk / fk_vis: stdlib pickle instead of pickle5
 for rel in (

@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from matplotlib import cm
-from matplotlib.animation import PillowWriter
+from matplotlib.animation import FFMpegWriter
 from matplotlib.colors import ListedColormap
 
 from agentlodge.config import FPS
@@ -105,57 +105,48 @@ def render_stick_figure_video(
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
         raise RuntimeError("ffmpeg is required for stick-figure video export but was not found on PATH.")
+    plt.rcParams["animation.ffmpeg_path"] = ffmpeg
 
     with TemporaryDirectory() as temp_dir:
-        gif_path = Path(temp_dir) / "render.gif"
-        anim.save(str(gif_path), writer=PillowWriter(fps=fps))
+        # Encode frames straight to H.264 mp4 (piped to ffmpeg) instead of writing a
+        # GIF first: the GIF -> h264 path is pathologically slow / can hang.
+        needs_audio = audio_path is not None and audio_path.exists()
+        video_only = Path(temp_dir) / "render.mp4" if needs_audio else output_mp4
+        writer = FFMpegWriter(
+            fps=fps,
+            codec="libx264",
+            extra_args=["-pix_fmt", "yuv420p"],
+        )
+        anim.save(str(video_only), writer=writer)
         plt.close(fig)
 
-        if audio_path is not None and audio_path.exists():
+        if needs_audio:
+            # Mux the pre-encoded video with audio using a stream copy (fast).
             cmd = [
                 ffmpeg,
                 "-loglevel",
                 "error",
                 "-y",
                 "-i",
-                str(gif_path),
+                str(video_only),
                 "-i",
                 str(audio_path),
                 "-shortest",
                 "-c:v",
-                "libx264",
-                "-crf",
-                "26",
+                "copy",
                 "-c:a",
                 "aac",
                 "-q:a",
                 "4",
                 str(output_mp4),
             ]
-        else:
-            cmd = [
-                ffmpeg,
-                "-loglevel",
-                "error",
-                "-y",
-                "-i",
-                str(gif_path),
-                "-c:v",
-                "libx264",
-                "-crf",
-                "26",
-                "-pix_fmt",
-                "yuv420p",
-                str(output_mp4),
-            ]
-
-        logger.info("Running ffmpeg to encode %s", output_mp4.name)
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"ffmpeg failed (exit {result.returncode}).\n"
-                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-            )
+            logger.info("Muxing audio into %s", output_mp4.name)
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"ffmpeg audio mux failed (exit {result.returncode}).\n"
+                    f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+                )
 
     return output_mp4
 

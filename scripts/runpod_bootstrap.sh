@@ -5,10 +5,11 @@ set -euo pipefail
 WORK="${WORKSPACE:-/workspace}"
 cd "$WORK"
 
-echo "=== System packages (ffmpeg for stick-figure video) ==="
+echo "=== System packages (ffmpeg, headless OpenGL for pyrender, build tools) ==="
 if command -v apt-get >/dev/null 2>&1; then
   apt-get update -qq
-  apt-get install -y -qq ffmpeg libsndfile1 >/dev/null || true
+  apt-get install -y -qq ffmpeg libsndfile1 build-essential \
+    libosmesa6 libosmesa6-dev libgl1-mesa-glx libglu1-mesa freeglut3-dev libglib2.0-0 >/dev/null || true
 fi
 ffmpeg -version | head -1 || echo "WARNING: ffmpeg not found; stick-figure mp4 export will fail"
 
@@ -46,23 +47,44 @@ pip install -U pip wheel setuptools
 pip install -r requirements.txt
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
 
-# LODGE deps
-pip install gdown omegaconf pytorch-lightning einops tqdm soundfile librosa
-pip install git+https://github.com/facebookresearch/pytorch3d.git || pip install pytorch3d
+# LODGE deps (opencv/pyrender/trimesh needed at render.py import; rest for model + FK)
+pip install gdown omegaconf pytorch-lightning einops tqdm soundfile librosa \
+  opencv-python-headless pyrender trimesh smplx p_tqdm h5py imageio psutil torchmetrics
 
-# EDGE / Jukebox deps (jukemirlib bundles jukebox)
-cd "$WORK/EDGE"
-pip install -r requirements.txt 2>/dev/null || true
-pip install accelerate wandb smplx jukemirlib 2>/dev/null || pip install git+https://github.com/rodrigo-castellon/jukemirlib.git
+# pytorch3d: no prebuilt wheel for recent torch, and PEP 517 build isolation hides the
+# already-installed torch (ModuleNotFoundError: torch). Build CPU-only (no nvcc required)
+# with build isolation disabled so the build backend can import torch.
+pip install ninja fvcore iopath
+FORCE_CUDA=0 pip install --no-build-isolation "git+https://github.com/facebookresearch/pytorch3d.git@stable" \
+  || FORCE_CUDA=0 pip install --no-build-isolation pytorch3d
 
-# Symlink venv so subprocess_runner finds EDGE/LODGE .venv
+# EDGE app deps into the shared venv (EDGE model needs these; jukebox/jukemirlib are
+# installed separately into a dedicated EDGE venv below so their old pins do NOT
+# downgrade the shared LODGE stack: tqdm/soundfile/librosa).
+pip install accelerate wandb einops
+
+# LODGE shares the main venv; EDGE gets a DEDICATED venv. It inherits the shared heavy
+# packages (torch, pytorch3d, numpy, librosa, ...) via a .pth file, then installs
+# jukebox + jukemirlib with --no-deps so no versions are downgraded.
 ln -sfn "$WORK/AgentLODGE/.venv" "$WORK/LODGE/.venv"
-ln -sfn "$WORK/AgentLODGE/.venv" "$WORK/EDGE/.venv"
 
-echo "=== LODGE config + patches ==="
+PYVER=$(python3 -c 'import sys; print(f"python{sys.version_info.major}.{sys.version_info.minor}")')
+rm -rf "$WORK/EDGE/.venv"
+python3 -m venv "$WORK/EDGE/.venv"
+echo "$WORK/AgentLODGE/.venv/lib/$PYVER/site-packages" \
+  > "$WORK/EDGE/.venv/lib/$PYVER/site-packages/_shared_venv.pth"
+"$WORK/EDGE/.venv/bin/pip" install -q -U pip
+"$WORK/EDGE/.venv/bin/pip" install -q --no-build-isolation --no-deps \
+  "git+https://github.com/rodrigo-castellon/jukebox.git"
+"$WORK/EDGE/.venv/bin/pip" install -q --no-deps \
+  "git+https://github.com/rodrigo-castellon/jukemirlib.git"
+"$WORK/EDGE/.venv/bin/pip" install -q fire unidecode wget
+
+echo "=== LODGE + EDGE config + patches ==="
 mkdir -p "$WORK/LODGE/configs" "$WORK/LODGE/data"
 cp -f "$WORK/AgentLODGE/scripts/lodge_infer_local.yaml" "$WORK/LODGE/configs/infer_local.yaml"
 LODGE_CODE_PATH="$WORK/LODGE" python3 "$WORK/AgentLODGE/scripts/patch_lodge_pod.py"
+EDGE_CODE_PATH="$WORK/EDGE" python3 "$WORK/AgentLODGE/scripts/patch_edge_pod.py"
 
 SMPL_J="$WORK/LODGE/data/smplx_neu_J_1.npy"
 if [ ! -f "$SMPL_J" ]; then
