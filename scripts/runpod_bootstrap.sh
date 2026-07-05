@@ -98,14 +98,18 @@ if [ ! -f "exp/Local_Module/FineDance_FineTuneV2_Local/checkpoints/epoch=299.ckp
   pip install gdown
   bash download_checkpoints.sh || {
     gdown 13Yp__EPAw0EjrSS898X5FtSQGmveBykA -O pretrained_models.tar.gz
-    gunzip -c pretrained_models.tar.gz | tar -xf -
+    # --no-same-owner: the RunPod network FS rejects chown, which otherwise makes tar
+    # exit non-zero and (under set -e/pipefail) aborts the whole bootstrap.
+    gunzip -c pretrained_models.tar.gz | tar --no-same-owner -xf -
   }
 fi
 
 cd "$WORK/EDGE"
 if [ ! -f checkpoint.pt ]; then
-  bash download_model.sh 2>/dev/null || \
-    wget -q "https://drive.google.com/uc?export=download&id=1BAR712cVEqB8GR37fcEihRV_xOC-fZrZ" -O checkpoint.pt || true
+  # Google Drive's confirm-token flow returns an HTML page to wget/download_model.sh for
+  # large files; gdown handles the token and fetches the real 1.2GB checkpoint.
+  pip install gdown
+  gdown 1BAR712cVEqB8GR37fcEihRV_xOC-fZrZ -O checkpoint.pt
 fi
 
 echo "=== AgentLODGE .env ==="
