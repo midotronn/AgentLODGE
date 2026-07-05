@@ -2,6 +2,8 @@
 
 End-to-end pipeline that accepts a song, generates dances with **LODGE** and **EDGE** in parallel, selects the best result with an LLM agent, and generates a costume illustration derived entirely from the audio.
 
+![AgentLODGE pipeline](docs/pipeline_diagram.png)
+
 ## Pipeline
 
 1. **Audio preprocessing** — Librosa 35-dim features (LODGE) and Jukebox embeddings (EDGE) at 30 FPS
