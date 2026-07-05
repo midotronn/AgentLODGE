@@ -117,29 +117,43 @@ def setup_lights(cx, cy, top_z):
     fill.data.size = 6.0
     fill.location = (cx - 4.0, cy - 4.0, top_z + 2.0)
     bpy.context.collection.objects.link(fill)
+def _smooth(xy: np.ndarray, k: int = 11) -> np.ndarray:
+    """Moving-average smooth an (L, 2) path so the follow camera glides, not jitters."""
+    if xy.shape[0] < 3:
+        return xy
+    k = min(k, xy.shape[0] | 1)
+    pad = k // 2
+    padded = np.pad(xy, ((pad, pad), (0, 0)), mode="edge")
+    kernel = np.ones(k) / k
+    out = np.stack([np.convolve(padded[:, d], kernel, mode="valid") for d in range(2)], axis=1)
+    return out[: xy.shape[0]]
 
 
-def setup_camera(bmin, bmax):
-    cx = 0.5 * (bmin[0] + bmax[0])
-    cz = 0.5 * (bmin[2] + bmax[2])
-    depth_c = 0.5 * (bmin[1] + bmax[1])
-    span = max(bmax[0] - bmin[0], bmax[2] - bmin[2], bmax[1] - bmin[1], 1.0)
-    dist = span * 2.4
+def setup_follow_camera(centroids, body_size, floor_z):
+    """Camera that follows the dancer, keeping them large and centered.
+
+    Framing is sized to the body (not the whole trajectory), and the look-at target
+    tracks the smoothed horizontal centroid at a fixed mid-body height, so the dancer
+    stays big and steady as it travels across the floor.
+    """
+    dist = max(body_size, 1.0) * 2.6
+    target_z = floor_z + 0.55 * body_size
+    offset = np.array([dist * 0.55, -dist, body_size * 0.45])
 
     cam_data = bpy.data.cameras.new("Cam")
     cam_data.lens = 50.0
     cam = bpy.data.objects.new("Cam", cam_data)
-    cam.location = (cx + dist * 0.55, depth_c - dist, cz + span * 0.35)
     bpy.context.collection.objects.link(cam)
-
     target = bpy.data.objects.new("Target", None)
-    target.location = (cx, depth_c, cz)
     bpy.context.collection.objects.link(target)
     con = cam.constraints.new("TRACK_TO")
     con.target = target
     con.track_axis = "TRACK_NEGATIVE_Z"
     con.up_axis = "UP_Y"
     bpy.context.scene.camera = cam
+
+    follow_xy = _smooth(centroids[:, :2])
+    return cam, target, offset, target_z, follow_xy
 
 
 def configure_render(width, height, samples):
@@ -172,15 +186,24 @@ def main():
     bmin, bmax = world_bounds(verts)
     cx, cy, floor_z = setup_world_and_ground(bmin, bmax)
     setup_lights(cx, cy, float(bmax[2]))
-    setup_camera(bmin, bmax)
+
+    # Body size from per-frame extents (not the whole trajectory) keeps the dancer large.
+    per_frame_ext = verts.max(axis=1) - verts.min(axis=1)  # (L, 3)
+    body_size = float(np.median(per_frame_ext.max(axis=1)))
+    centroids = verts.mean(axis=1)  # (L, 3) world coords
+    cam, target, offset, target_z, follow_xy = setup_follow_camera(
+        centroids, body_size, floor_z
+    )
     configure_render(args.width, args.height, args.samples)
 
     scene = bpy.context.scene
-    n_verts = verts.shape[1]
     frames_dir = args.frames_dir.rstrip("/")
     for i in range(verts.shape[0]):
         mesh.vertices.foreach_set("co", verts[i].reshape(-1))
         mesh.update()
+        tx, ty = float(follow_xy[i, 0]), float(follow_xy[i, 1])
+        target.location = (tx, ty, target_z)
+        cam.location = (tx + offset[0], ty + offset[1], target_z + offset[2])
         scene.render.filepath = f"{frames_dir}/frame_{i:05d}.png"
         bpy.ops.render.render(write_still=True)
     print(f"BLENDER_RENDERED {verts.shape[0]} frames -> {frames_dir}")
