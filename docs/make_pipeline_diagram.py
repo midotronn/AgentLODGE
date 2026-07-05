@@ -7,7 +7,7 @@ from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
 
 fig, ax = plt.subplots(figsize=(9.5, 11.5))
 ax.set_xlim(0, 100)
-ax.set_ylim(0, 100)
+ax.set_ylim(9, 100)
 ax.axis("off")
 
 C = {
@@ -83,8 +83,6 @@ b_vid = box(9, 13, 34, 9, "Stick-figure Video",
             "FK \u2192 3D render + audio", color=C["vid"], tc="white")
 b_cos = box(57, 13, 34, 9, "Costume  (LLM \u2192 image)",
             "from audio features", color=C["cos"], tc="white")
-b_mp4 = box(12, 3, 28, 5, "dance.mp4", color=C["out"], fs=10)
-b_png = box(60, 3, 28, 5, "costume.png", color=C["out"], fs=10)
 
 arr(bc(b_in), tc_(b_pre))
 arr((36, 76), tc_(b_lodge), rad=0.1)
@@ -94,8 +92,6 @@ arr(bc(b_edge), (60, 56.5), rad=-0.1)
 arr(bc(b_met), tc_(b_sel))
 arr(bc(b_sel), tc_(b_fmt))
 arr(bc(b_fmt), tc_(b_vid), rad=0.12)
-arr(bc(b_vid), tc_(b_mp4))
-arr(bc(b_cos), tc_(b_png))
 # audio features drive costume (clean right-margin channel)
 ortho([(76, 79), (95, 79), (95, 22), (91, 22)], color=COST_C,
       label="audio \u2192 costume", label_pt=(95, 50))
