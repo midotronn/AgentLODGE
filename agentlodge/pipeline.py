@@ -323,6 +323,8 @@ def run_pipeline(
 
     selected_model = "lodge"
     reasoning = ""
+    selection_analysis = ""
+    selection_scores: dict | None = None
     if lodge_metrics and edge_metrics:
         selection = select_dance(
             lodge_metrics,
@@ -332,6 +334,8 @@ def run_pipeline(
         )
         selected_model = selection.selected_model
         reasoning = selection.reasoning
+        selection_analysis = selection.analysis
+        selection_scores = selection.scores
         if selection.used_fallback:
             errors.append(f"selection agent fallback: {reasoning}")
     elif lodge_out.motion is None:
@@ -389,10 +393,18 @@ def run_pipeline(
     log_payload = {
         "selected_model": selected_model,
         "selection_reasoning": reasoning,
+        "selection_analysis": selection_analysis,
+        "selection_scores": selection_scores,
         "lodge_bas": lodge_metrics.beat_alignment_score if lodge_metrics else None,
         "edge_bas": edge_metrics.beat_alignment_score if edge_metrics else None,
         "lodge_diversity": lodge_metrics.motion_diversity if lodge_metrics else None,
         "edge_diversity": edge_metrics.motion_diversity if edge_metrics else None,
+        "lodge_coherence": lodge_metrics.coherence.to_dict()
+        if lodge_metrics and lodge_metrics.coherence
+        else None,
+        "edge_coherence": edge_metrics.coherence.to_dict()
+        if edge_metrics and edge_metrics.coherence
+        else None,
         "song_duration_seconds": preprocessed.metadata.duration_seconds,
         "costume_description": costume_description,
         "audio_features": {

@@ -9,6 +9,7 @@ import numpy as np
 
 from agentlodge.config import FPS
 from agentlodge.audio.preprocess import SongMetadata
+from agentlodge.dance.coherence import CoherenceProfile, compute_coherence
 
 
 BEAT_TOLERANCE_FRAMES = 3
@@ -21,6 +22,7 @@ class DanceMetrics:
     beat_alignment_score: float
     motion_diversity: float
     summary: str
+    coherence: CoherenceProfile | None = None
 
 
 def _kinematic_energy(motion: np.ndarray) -> np.ndarray:
@@ -80,14 +82,18 @@ def compute_metrics(
 ) -> DanceMetrics:
     bas = beat_alignment_score(motion, metadata)
     diversity = motion_diversity(motion)
+    coherence = compute_coherence(motion, metadata)
     summary = (
         f"{model_name.upper()} generated {motion.shape[0]} frames "
         f"({motion.shape[0] / FPS:.1f}s) at 30 FPS. "
         f"{generation_notes} "
-        f"BAS={bas:.3f}, diversity={diversity:.3f}."
+        f"BAS={bas:.3f}, diversity={diversity:.3f}, "
+        f"jerk={coherence.smoothness_jerk:.3f}, seam_spikiness={coherence.seam_spikiness:.2f}, "
+        f"foot_skating={coherence.foot_skating:.3f}, sync_trend={coherence.bas_trend:+.3f}."
     )
     return DanceMetrics(
         beat_alignment_score=bas,
         motion_diversity=diversity,
         summary=summary,
+        coherence=coherence,
     )

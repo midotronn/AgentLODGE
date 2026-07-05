@@ -6,7 +6,7 @@ End-to-end pipeline that accepts a song, generates dances with **LODGE** and **E
 
 1. **Audio preprocessing** — Librosa 35-dim features (LODGE) and Jukebox embeddings (EDGE) at 30 FPS
 2. **Parallel dance generation** — LODGE global+PDDM and EDGE long-form (5s clips, 2.5s overlap)
-3. **Dance selection agent** — OpenAI compares beat alignment, motion diversity, and song metadata
+3. **Dance selection agent** — an LLM reasons over per-window **long-term coherence** signals (seam smoothness, jitter, foot stability, sustained beat-sync trend, variety), scores each dance on a coherence rubric, and picks the more coherent long-form dance; beat alignment and diversity are secondary tie-breakers
 4. **Stick-figure video** — SMPL forward kinematics + matplotlib animation, muxed with input audio
 5. **Costume description agent** — an LLM turns the song's acoustic features (tempo, energy, timbre, key/mode, rhythmic density) plus the `LODGE_GENRE` hint into a costume description
 6. **Costume image generation** — OpenAI (`gpt-image-1`) or Gemini Imagen renders the audio-derived description
