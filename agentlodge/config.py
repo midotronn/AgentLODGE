@@ -26,6 +26,12 @@ def _path(value: str | None, default: str) -> Path:
     return Path(raw).expanduser().resolve()
 
 
+def _opt_path(value: str | None) -> Path | None:
+    if value is None or value.strip() == "":
+        return None
+    return Path(value).expanduser().resolve()
+
+
 @dataclass(frozen=True)
 class Settings:
     anthropic_api_key: str | None
@@ -41,6 +47,11 @@ class Settings:
     lodge_genre: str
     min_audio_seconds: float
     max_edge_slices: int | None
+    render_backend: str = "stick"
+    blender_bin: Path | None = None
+    smplx_model_dir: Path | None = None
+    smplx_uv_path: Path | None = None
+    smplx_texture_path: Path | None = None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -69,6 +80,11 @@ class Settings:
             lodge_genre=os.getenv("LODGE_GENRE", "Hiphop"),
             min_audio_seconds=float(os.getenv("AGENTLODGE_MIN_AUDIO_SECONDS", "20")),
             max_edge_slices=_optional_int(os.getenv("AGENTLODGE_MAX_EDGE_SLICES", "7")),
+            render_backend=os.getenv("AGENTLODGE_RENDER_BACKEND", "stick").lower(),
+            blender_bin=_opt_path(os.getenv("BLENDER_BIN")),
+            smplx_model_dir=_opt_path(os.getenv("SMPLX_MODEL_DIR")),
+            smplx_uv_path=_opt_path(os.getenv("SMPLX_UV_PATH")),
+            smplx_texture_path=_opt_path(os.getenv("SMPLX_TEXTURE_PATH")),
         )
 
     @classmethod
@@ -95,6 +111,11 @@ class Settings:
             lodge_genre=data.get("lodge_genre", "Hiphop"),
             min_audio_seconds=float(data.get("min_audio_seconds", 20)),
             max_edge_slices=data.get("max_edge_slices"),
+            render_backend=data.get("render_backend", "stick"),
+            blender_bin=_opt_path(data.get("blender_bin")),
+            smplx_model_dir=_opt_path(data.get("smplx_model_dir")),
+            smplx_uv_path=_opt_path(data.get("smplx_uv_path")),
+            smplx_texture_path=_opt_path(data.get("smplx_texture_path")),
         )
 
     def validate_image_backend(self) -> None:

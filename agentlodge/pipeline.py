@@ -21,6 +21,7 @@ from agentlodge.dance.format import ensure_lodge139
 from agentlodge.dance.metrics import DanceMetrics, compute_metrics
 from agentlodge.image.costume import generate_costume_image
 from agentlodge.subprocess_runner import (
+    run_blender_video_subprocess,
     run_edge_inference_subprocess,
     run_lodge_inference_subprocess,
     run_stick_video_subprocess,
@@ -210,6 +211,11 @@ def _settings_to_dict(settings: Settings) -> dict:
         "lodge_genre": settings.lodge_genre,
         "min_audio_seconds": settings.min_audio_seconds,
         "max_edge_slices": settings.max_edge_slices,
+        "render_backend": settings.render_backend,
+        "blender_bin": str(settings.blender_bin) if settings.blender_bin else None,
+        "smplx_model_dir": str(settings.smplx_model_dir) if settings.smplx_model_dir else None,
+        "smplx_uv_path": str(settings.smplx_uv_path) if settings.smplx_uv_path else None,
+        "smplx_texture_path": str(settings.smplx_texture_path) if settings.smplx_texture_path else None,
     }
 
 
@@ -356,20 +362,55 @@ def run_pipeline(
 
     stick_figure_video: Path | None = None
     if render_video:
-        stick_figure_video = out_dir / "dance_stick_figure.mp4"
-        try:
-            run_stick_video_subprocess(
-                settings.lodge_code_path.resolve(),
-                motion_path,
-                stick_figure_video,
-                audio_path=audio_path,
+        use_blender = (
+            settings.render_backend == "blender"
+            and settings.blender_bin is not None
+            and settings.smplx_model_dir is not None
+        )
+        if settings.render_backend == "blender" and not use_blender:
+            msg = (
+                "render_backend=blender but BLENDER_BIN/SMPLX_MODEL_DIR are not both set; "
+                "falling back to stick-figure rendering."
             )
-            logger.info("Saved stick figure video to %s", stick_figure_video)
-        except Exception as exc:
-            msg = f"Stick figure video render failed: {exc}"
             errors.append(msg)
-            logger.error(msg)
-            stick_figure_video = None
+            logger.warning(msg)
+
+        if use_blender:
+            stick_figure_video = out_dir / "dance_blender.mp4"
+            try:
+                run_blender_video_subprocess(
+                    settings.lodge_code_path.resolve(),
+                    motion_path,
+                    stick_figure_video,
+                    settings.blender_bin.resolve(),
+                    settings.smplx_model_dir.resolve(),
+                    audio_path=audio_path,
+                    uv_npz=settings.smplx_uv_path,
+                    texture_png=settings.smplx_texture_path,
+                )
+                logger.info("Saved Blender mesh video to %s", stick_figure_video)
+            except Exception as exc:
+                msg = f"Blender mesh video render failed: {exc}"
+                errors.append(msg)
+                logger.error(msg)
+                stick_figure_video = None
+                use_blender = False  # fall through to stick figure
+
+        if not use_blender:
+            stick_figure_video = out_dir / "dance_stick_figure.mp4"
+            try:
+                run_stick_video_subprocess(
+                    settings.lodge_code_path.resolve(),
+                    motion_path,
+                    stick_figure_video,
+                    audio_path=audio_path,
+                )
+                logger.info("Saved stick figure video to %s", stick_figure_video)
+            except Exception as exc:
+                msg = f"Stick figure video render failed: {exc}"
+                errors.append(msg)
+                logger.error(msg)
+                stick_figure_video = None
 
     costume_description = ""
     costume_path = out_dir / "costume_output.png"

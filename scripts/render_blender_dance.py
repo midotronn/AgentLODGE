@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+"""Compute posed SMPL-X vertices for a dance and render them in Blender.
+
+Blender's bundled Python cannot import torch / the smplx package, so this orchestrator
+(run from the AgentLODGE venv) does the heavy lifting:
+
+1. turn a (L, 139) motion array into per-frame SMPL-X body vertices, faces and per-loop
+   UVs using the licensed SMPL-X body model;
+2. save them to a compact ``.npz``;
+3. invoke Blender headless with ``scripts/blender_render_smplx.py`` to render a shaded,
+   textured mp4 (camera framed to the motion, sun + fill lights, ground with shadows);
+4. mux the input audio.
+
+The SMPL-X body model is licence gated (https://smpl-x.is.tue.mpg.de) and must be
+supplied by the user; nothing here is bundled.
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+import numpy as np
+
+logger = logging.getLogger(__name__)
+
+
+def compute_smplx_meshes(
+    motion139: np.ndarray, model_dir: Path, lodge_code_path: Path
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return (verts (L, V, 3) native y-up, faces (F, 3)) for a 139-dim motion."""
+    import torch
+
+    from agentlodge.dance.format import to_native_finedance139
+    from agentlodge.env_paths import lodge_import_paths, use_code_paths
+
+    native = to_native_finedance139(np.asarray(motion139, dtype=np.float32))
+    trans = native[:, 4:7]
+    rot6d = native[:, 7:139].reshape(-1, 22, 6)
+
+    with use_code_paths(*lodge_import_paths(lodge_code_path)):
+        from dld.data.render_joints.smplfk import ax_from_6v
+
+        poses = ax_from_6v(torch.from_numpy(rot6d).float()).reshape(-1, 22, 3).numpy()
+
+    import smplx as smplx_pkg
+
+    model = smplx_pkg.create(
+        str(model_dir), model_type="smplx", gender="neutral",
+        use_pca=False, flat_hand_mean=True, batch_size=1,
+    )
+    length = poses.shape[0]
+    verts = np.empty((length, model.get_num_verts(), 3), dtype=np.float32)
+    with torch.no_grad():
+        for i in range(length):
+            out = model(
+                global_orient=torch.from_numpy(poses[i, 0:1]).float().reshape(1, 3),
+                body_pose=torch.from_numpy(poses[i, 1:22]).float().reshape(1, 63),
+                transl=torch.from_numpy(trans[i]).float().reshape(1, 3),
+            )
+            verts[i] = out.vertices[0].numpy()
+    return verts, model.faces.astype(np.int32)
+
+
+def _orient_verts_zup(verts: np.ndarray) -> np.ndarray:
+    """Rotate SMPL-X verts (L, V, 3) so the body's vertical axis maps to +Z.
+
+    The FK output orientation is data dependent (LODGE vs EDGE-derived motion), so detect
+    the vertical axis as the one with the largest median per-frame extent and map it to Z
+    with a proper (det=+1) rotation, keeping face winding/normals valid.
+    """
+    ext = np.median(verts.max(axis=1) - verts.min(axis=1), axis=0)
+    up = int(np.argmax(ext))
+    if up == 2:
+        return verts
+    if up == 1:  # Y-up -> Z-up via Rx(+90): (x, y, z) -> (x, -z, y)
+        out = np.stack([verts[..., 0], -verts[..., 2], verts[..., 1]], axis=-1)
+    else:  # X-up -> Z-up via Ry(+90): (x, y, z) -> (-z, y, x)
+        out = np.stack([-verts[..., 2], verts[..., 1], verts[..., 0]], axis=-1)
+    return out.astype(np.float32)
+
+
+def render_blender_dance(
+    motion_npy: Path,
+    output_mp4: Path,
+    *,
+    lodge_code_path: Path,
+    smplx_model_dir: Path,
+    blender_bin: Path,
+    blender_script: Path,
+    audio_path: Path | None = None,
+    uv_npz: Path | None = None,
+    texture_png: Path | None = None,
+    img_size: tuple[int, int] = (960, 960),
+    samples: int = 64,
+    fps: int = 30,
+) -> Path:
+    output_mp4 = Path(output_mp4).resolve()
+    output_mp4.parent.mkdir(parents=True, exist_ok=True)
+    motion = np.load(motion_npy)
+
+    logger.info("Computing SMPL-X meshes for %d frames...", motion.shape[0])
+    verts, faces = compute_smplx_meshes(motion, smplx_model_dir, lodge_code_path)
+    verts = _orient_verts_zup(verts)
+
+    uv = None
+    if uv_npz is not None and Path(uv_npz).exists():
+        uv_data = np.load(uv_npz, allow_pickle=True)
+        key = "uv_coordinates" if "uv_coordinates" in uv_data.files else uv_data.files[0]
+        uv = uv_data[key].astype(np.float32)
+
+    work = Path(tempfile.mkdtemp(prefix="blender_smplx_"))
+    mesh_npz = work / "meshes.npz"
+    frames_dir = work / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    save_kwargs = {"verts": verts, "faces": faces}
+    if uv is not None:
+        save_kwargs["uv"] = uv
+    np.savez(mesh_npz, **save_kwargs)
+
+    cmd = [
+        str(blender_bin), "-b", "-noaudio", "-P", str(blender_script), "--",
+        "--meshes", str(mesh_npz),
+        "--frames-dir", str(frames_dir),
+        "--width", str(img_size[0]), "--height", str(img_size[1]),
+        "--samples", str(samples),
+    ]
+    if texture_png is not None and Path(texture_png).exists():
+        cmd += ["--texture", str(texture_png)]
+    logger.info("Rendering in Blender (%dx%d, %d samples)...", *img_size, samples)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Blender render failed (exit {result.returncode}).\n"
+            f"stdout tail:\n{result.stdout[-2000:]}\nstderr tail:\n{result.stderr[-2000:]}"
+        )
+
+    frames = sorted(frames_dir.glob("frame_*.png"))
+    if not frames:
+        raise RuntimeError(f"Blender produced no frames in {frames_dir}\n{result.stdout[-1500:]}")
+    logger.info("Blender rendered %d frames; encoding video...", len(frames))
+
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise RuntimeError("ffmpeg not found on PATH")
+    silent = work / "silent.mp4"
+    subprocess.run([
+        ffmpeg, "-loglevel", "error", "-y", "-framerate", str(fps),
+        "-i", str(frames_dir / "frame_%05d.png"),
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", str(silent),
+    ], check=True)
+
+    if audio_path is not None and Path(audio_path).exists():
+        subprocess.run([
+            ffmpeg, "-loglevel", "error", "-y", "-i", str(silent), "-i", str(audio_path),
+            "-shortest", "-c:v", "copy", "-c:a", "aac", "-q:a", "4", str(output_mp4),
+        ], check=True)
+    else:
+        shutil.copy(silent, output_mp4)
+
+    shutil.rmtree(work, ignore_errors=True)
+    logger.info("Saved Blender dance video to %s", output_mp4)
+    return output_mp4
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--agentlodge-root", required=True)
+    parser.add_argument("--motion-npy", required=True)
+    parser.add_argument("--output-mp4", required=True)
+    parser.add_argument("--lodge-code-path", required=True)
+    parser.add_argument("--smplx-model-dir", required=True)
+    parser.add_argument("--blender-bin", required=True)
+    parser.add_argument("--blender-script", required=True)
+    parser.add_argument("--audio", default="")
+    parser.add_argument("--uv-npz", default="")
+    parser.add_argument("--texture", default="")
+    parser.add_argument("--width", type=int, default=960)
+    parser.add_argument("--height", type=int, default=960)
+    parser.add_argument("--samples", type=int, default=64)
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    sys.path.insert(0, str(Path(args.agentlodge_root).resolve()))
+
+    out = render_blender_dance(
+        Path(args.motion_npy).resolve(),
+        Path(args.output_mp4).resolve(),
+        lodge_code_path=Path(args.lodge_code_path).resolve(),
+        smplx_model_dir=Path(args.smplx_model_dir).resolve(),
+        blender_bin=Path(args.blender_bin).resolve(),
+        blender_script=Path(args.blender_script).resolve(),
+        audio_path=Path(args.audio).resolve() if args.audio else None,
+        uv_npz=Path(args.uv_npz).resolve() if args.uv_npz else None,
+        texture_png=Path(args.texture).resolve() if args.texture else None,
+        img_size=(args.width, args.height),
+        samples=args.samples,
+    )
+    print(f"Saved Blender dance video to {out} ({out.stat().st_size} bytes)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

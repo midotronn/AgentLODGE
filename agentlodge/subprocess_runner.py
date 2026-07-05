@@ -164,3 +164,42 @@ def run_stick_video_subprocess(
     result = _run(cmd, timeout_seconds=timeout_seconds, step="stick figure video")
     _raise_on_failure(result, "Stick figure video render")
 
+
+def run_blender_video_subprocess(
+    lodge_code_path: Path,
+    motion_npy: Path,
+    output_mp4: Path,
+    blender_bin: Path,
+    smplx_model_dir: Path,
+    *,
+    audio_path: Path | None = None,
+    uv_npz: Path | None = None,
+    texture_png: Path | None = None,
+    width: int = 900,
+    height: int = 900,
+    samples: int = 32,
+    timeout_seconds: int | None = None,
+) -> None:
+    """Render the dance as a shaded SMPL-X mesh in Blender (needs the licensed model)."""
+    python = _venv_python(lodge_code_path, "LODGE")
+    cmd = [
+        str(python),
+        str(SCRIPTS_DIR / "render_blender_dance.py"),
+        "--agentlodge-root", str(AGENTLODGE_ROOT),
+        "--motion-npy", str(motion_npy),
+        "--output-mp4", str(output_mp4),
+        "--lodge-code-path", str(lodge_code_path),
+        "--smplx-model-dir", str(smplx_model_dir),
+        "--blender-bin", str(blender_bin),
+        "--blender-script", str(SCRIPTS_DIR / "blender_render_smplx.py"),
+        "--width", str(width), "--height", str(height), "--samples", str(samples),
+    ]
+    if audio_path is not None:
+        cmd.extend(["--audio", str(audio_path)])
+    if uv_npz is not None:
+        cmd.extend(["--uv-npz", str(uv_npz)])
+    if texture_png is not None:
+        cmd.extend(["--texture", str(texture_png)])
+    result = _run(cmd, timeout_seconds=timeout_seconds, step="Blender mesh video")
+    _raise_on_failure(result, "Blender mesh video render")
+
