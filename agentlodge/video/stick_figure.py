@@ -30,13 +30,34 @@ def default_smpl_joint_path(lodge_code_path: Path) -> Path:
     return lodge_code_path / "data" / "smplx_neu_J_1.npy"
 
 
+def _orient_z_up(joints: np.ndarray) -> np.ndarray:
+    """Reorient FK joints (L, 22, 3) so the human's vertical axis maps to matplotlib z.
+
+    LODGE (FineDance) FK output is Y-up, while EDGE-derived motion run through the same
+    FK comes out Z-up, so a fixed axis swap mis-orients one of them (the figure ends up
+    lying down). Detect the vertical axis model-agnostically as the one with the largest
+    median per-frame extent (a standing/dancing human is tallest along "up"), move it to
+    z, and flip if the head ends up below the feet.
+    """
+    extent = np.median(joints.max(axis=1) - joints.min(axis=1), axis=0)
+    up = int(np.argmax(extent))
+    horiz = [a for a in range(3) if a != up]
+    oriented = joints[..., [horiz[0], horiz[1], up]]
+    head_z = float(np.mean(oriented[:, 15, 2]))  # SMPL head joint
+    feet_z = float(np.mean(oriented[:, [7, 8, 10, 11], 2]))  # ankles + feet
+    if head_z < feet_z:
+        oriented = oriented.copy()
+        oriented[..., 2] = -oriented[..., 2]
+    return oriented
+
+
 def joints_from_motion139(
     motion: np.ndarray,
     *,
     lodge_code_path: Path,
     smpl_joint_path: Path | None = None,
 ) -> np.ndarray:
-    """Forward kinematics from a (L, 139) motion array to (L, 22, 3) joints."""
+    """Forward kinematics from a (L, 139) motion array to (L, 22, 3) joints (z-up)."""
     jpath = smpl_joint_path or default_smpl_joint_path(lodge_code_path)
     if not jpath.exists():
         raise FileNotFoundError(
@@ -54,8 +75,55 @@ def joints_from_motion139(
         poses = ax_from_6v(rot6d).reshape(-1, 66)
         fk = SMPLX_Skeleton(device="cpu", batch=1, Jpath=str(jpath))
         joints = fk.forward(poses, trans).detach().cpu().numpy()[:, :22]
-    # FineDance uses Y-up; matplotlib stick-figure view uses Z-up like EDGE.
-    return joints[..., [0, 2, 1]]
+    # Model-agnostic: put the human's vertical axis on matplotlib's z regardless of
+    # whether the FK output is Y-up (LODGE) or Z-up (EDGE-derived motion).
+    return _orient_z_up(joints)
+
+
+def _framing(joints: np.ndarray) -> tuple[float, float, float, float]:
+    """Center the figure and stand it on the floor, sized to fill the frame.
+
+    Returns (center_x, center_y, floor_z, radius). Derived from the full motion so the
+    dancer stays centered and grounded regardless of the model's root translation.
+    """
+    xs, ys, zs = joints[..., 0], joints[..., 1], joints[..., 2]
+    cx = 0.5 * (float(xs.min()) + float(xs.max()))
+    cy = 0.5 * (float(ys.min()) + float(ys.max()))
+    # Floor at a robust low percentile of the per-frame minimum foot height, so the
+    # dancer rests on the ground for most frames without a single deep frame dropping
+    # the floor far below the feet.
+    per_frame_foot_min = joints[:, (7, 8, 10, 11), 2].min(axis=1)
+    floor = float(np.percentile(per_frame_foot_min, 5))
+    span = max(
+        float(xs.max() - xs.min()),
+        float(ys.max() - ys.min()),
+        float(zs.max() - zs.min()),
+    )
+    radius = max(span, 1e-3) * 0.5 * 1.15  # cubic half-extent with a margin
+    return cx, cy, floor, radius
+
+
+def _set_line_data_3d(line, x: np.ndarray) -> None:
+    line.set_data(x[:, :2].T)
+    line.set_3d_properties(x[:, 2])
+
+
+def _set_scatter_data_3d(scat, x: np.ndarray, color: str) -> None:
+    scat.set_offsets(x[:, :2])
+    scat.set_3d_properties(x[:, 2], "z")
+    scat.set_facecolors([color])
+
+
+def _plot_pose(num, poses, lines, ax, scat, contact, parents) -> None:
+    """Update a single animation frame without resetting the (dynamic) axis limits."""
+    pose = poses[num]
+    static = contact[num]
+    for i, (point, idx) in enumerate(zip(scat, (7, 8, 10, 11))):
+        _set_scatter_data_3d(point, pose[idx : idx + 1], "r" if static[i] else "g")
+    for i, (parent, line) in enumerate(zip(parents, lines)):
+        if i == 0:
+            continue
+        _set_line_data_3d(line, np.stack((pose[i], pose[parent]), axis=0))
 
 
 def render_stick_figure_video(
@@ -70,23 +138,26 @@ def render_stick_figure_video(
     output_mp4 = output_mp4.resolve()
     output_mp4.parent.mkdir(parents=True, exist_ok=True)
 
-    with use_code_paths(*lodge_import_paths(lodge_code_path)):
-        from dld.data.render_joints.smplfk import plot_single_pose
-
     num_steps = joints.shape[0]
     fig = plt.figure()
     ax = fig.add_subplot(projection="3d")
 
-    point = np.array([0, 0, 1])
-    normal = np.array([0, 0, 1])
-    d = -point.dot(normal)
-    xx, yy = np.meshgrid(np.linspace(-1.5, 1.5, 2), np.linspace(-1.5, 1.5, 2))
-    z = (-normal[0] * xx - normal[1] * yy - d) * 1.0 / normal[2]
-    ax.plot_surface(xx, yy, z, zorder=-11, cmap=cm.twilight)
+    cx, cy, floor, radius = _framing(joints)
+    ax.set_xlim(cx - radius, cx + radius)
+    ax.set_ylim(cy - radius, cy + radius)
+    ax.set_zlim(floor, floor + 2 * radius)
+    ax.set_box_aspect((1, 1, 1))
+    ax.view_init(elev=15, azim=-70)
+
+    xx, yy = np.meshgrid(
+        np.linspace(cx - radius, cx + radius, 2),
+        np.linspace(cy - radius, cy + radius, 2),
+    )
+    ax.plot_surface(xx, yy, np.full_like(xx, floor), zorder=-11, cmap=cm.twilight)
 
     lines = [ax.plot([], [], [], zorder=10, linewidth=1.5)[0] for _ in BODY_PARENTS]
     scat = [
-        ax.scatter([], [], [], zorder=10, s=0, cmap=ListedColormap(["r", "g", "b"]))
+        ax.scatter([], [], [], zorder=10, s=8, cmap=ListedColormap(["r", "g", "b"]))
         for _ in range(4)
     ]
     feet = joints[:, (7, 8, 10, 11)]
@@ -96,9 +167,9 @@ def render_stick_figure_video(
 
     anim = animation.FuncAnimation(
         fig,
-        plot_single_pose,
+        _plot_pose,
         num_steps,
-        fargs=(joints, lines, ax, 3, scat, contact, BODY_PARENTS),
+        fargs=(joints, lines, ax, scat, contact, BODY_PARENTS),
         interval=1000 // fps,
     )
 
