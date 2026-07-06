@@ -58,6 +58,8 @@ def parse_args():
                    help="Extra degrees about Z to face the dancer toward the camera")
     p.add_argument("--stride", type=int, default=1,
                    help="Render every Nth frame (validation only; alignment still uses all)")
+    p.add_argument("--force-align", action="store_true",
+                   help="Skip alignment auto-detect; use exactly --align-x about X (0 = identity)")
     return p.parse_args(argv)
 
 
@@ -159,8 +161,11 @@ def main():
     robot_meshes = style_robot(arm, color)
     normalise_scale(arm)
 
+    # Keep the FBX import's Y-up -> Z-up object rotation: it is what actually stands the
+    # Y-up SMPL body upright in Blender's Z-up world. (Resetting it to identity tips the
+    # whole dance onto the floor, which per-bone alignment cannot fully undo.)
     arm.rotation_mode = "QUATERNION"
-    arm.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
+    import_rot = arm.rotation_quaternion.copy()
     for pb in arm.pose.bones:
         pb.rotation_mode = "QUATERNION"
 
@@ -183,9 +188,10 @@ def main():
             arm.pose.bones[name].rotation_quaternion = basis.to_quaternion()
 
     # The SMPL rotations live in the dance's own world frame (Y-up for FineDance, Z-up for
-    # EDGE-derived motion). Rather than guess, pick the fixed alignment A whose posed pelvis
-    # stands most consistently upright (bone axis -> +Z) across sampled frames. This keeps
-    # the robot vertical every frame while preserving its yaw/facing and limb articulation.
+    # EDGE-derived motion). Pick the fixed alignment A whose posed body stands most upright.
+    # Use the whole torso axis (pelvis -> head) rather than the pelvis bone tail: the Mixamo
+    # pelvis bone does not point along the body's up axis, so scoring it can pick an
+    # alignment that tips an actually-upright dance onto the floor.
     candidates = [
         ("I", Matrix.Identity(3)),
         ("X+90", Matrix.Rotation(math.radians(90), 3, "X")),
@@ -198,23 +204,34 @@ def main():
     ]
     if abs(args.align_x) > 1e-6:  # honour an explicit override first
         candidates.insert(0, ("override", Matrix.Rotation(math.radians(args.align_x), 3, "X")))
-    sample = list(range(0, L, max(1, L // 8)))
-    best_A, best_score = Matrix.Identity(3), -2.0
-    for _label, A in candidates:
-        A_inv = A.transposed()
-        zsum = 0.0
+    sample = list(range(0, L, max(1, L // 48)))
+
+    def spine_up_z(A, A_inv):
+        vals = []
         for i in sample:
             apply_pose(i, A, A_inv)
             bpy.context.view_layer.update()
-            zsum += (wtail("m_avg_Pelvis") - whead("m_avg_Pelvis")).normalized().z
-        score = zsum / len(sample)
-        if score > best_score + 1e-3:  # strict improvement; ties keep the earlier (identity)
-            best_score, best_A = score, A
+            up = (wtail("m_avg_Head") - whead("m_avg_Pelvis"))
+            if up.length > 1e-6:
+                vals.append(up.normalized().z)
+        return float(np.median(vals)) if vals else -2.0
+
+    if args.force_align:
+        best_A = Matrix.Rotation(math.radians(args.align_x), 3, "X")
+        best_label, best_score = f"forced({args.align_x})", spine_up_z(best_A, best_A.transposed())
+    else:
+        best_A, best_score, best_label = Matrix.Identity(3), -2.0, "I"
+        for label, A in candidates:
+            score = spine_up_z(A, A.transposed())
+            if score > best_score + 1e-3:  # strict improvement; ties keep the earlier (identity)
+                best_score, best_A, best_label = score, A, label
     A = best_A
     A_inv = A.transposed()
+    print(f"YBOT_ALIGN chosen={best_label} spine_up_z={best_score:.3f}")
 
-    if abs(args.yaw) > 1e-6:  # optional facing tweak (about the vertical axis)
-        arm.rotation_quaternion = Quaternion(Vector((0.0, 0.0, 1.0)), math.radians(args.yaw))
+    if abs(args.yaw) > 1e-6:  # optional facing tweak about the vertical axis, composed with
+        # the import rotation so we do not discard the Y-up -> Z-up conversion.
+        arm.rotation_quaternion = Quaternion(Vector((0.0, 0.0, 1.0)), math.radians(args.yaw)) @ import_rot
         bpy.context.view_layer.update()
 
     def pose_frame(i):
