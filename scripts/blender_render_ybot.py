@@ -78,8 +78,10 @@ def import_ybot(path):
 
 
 def style_robot(arm, color):
-    """Grey metallic material on every robot segment; hide non-robot helper meshes."""
+    """Grey metallic material on every robot segment; hide non-robot helper meshes.
+    Returns the list of visible robot mesh objects (used for accurate grounding)."""
     mat = studio.make_material("Ybot", "", color, metallic=0.85, roughness=0.4)
+    robot_meshes = []
     for obj in list(bpy.data.objects):
         if obj.type != "MESH":
             continue
@@ -88,8 +90,34 @@ def style_robot(arm, color):
             obj.data.materials.append(mat)
             for poly in obj.data.polygons:
                 poly.use_smooth = True
+            robot_meshes.append(obj)
         else:
             obj.hide_render = True
+    return robot_meshes
+
+
+def lowest_mesh_z(depsgraph, meshes):
+    """World-space minimum z over the posed/skinned robot mesh vertices.
+
+    Grounding on the foot *bone* leaves the foot *mesh* (the sole) poking through the
+    floor, so we ground on the actual deformed surface instead. ``foreach_get`` + numpy
+    keeps this cheap even across the ~100 Y-Bot segments."""
+    mz = float("inf")
+    for obj in meshes:
+        ev = obj.evaluated_get(depsgraph)
+        me = ev.data
+        n = len(me.vertices)
+        if n == 0:
+            continue
+        co = np.empty(n * 3, dtype=np.float64)
+        me.vertices.foreach_get("co", co)
+        co = co.reshape(-1, 3)
+        M = np.array(ev.matrix_world)
+        world_z = co @ M[:3, :3].T[:, 2] + M[2, 3]
+        zmin = float(world_z.min())
+        if zmin < mz:
+            mz = zmin
+    return mz
 
 
 def rest_rotations(arm):
@@ -128,7 +156,7 @@ def main():
 
     bpy.ops.wm.read_factory_settings(use_empty=True)
     arm = import_ybot(args.ybot)
-    style_robot(arm, color)
+    robot_meshes = style_robot(arm, color)
     normalise_scale(arm)
 
     arm.rotation_mode = "QUATERNION"
@@ -213,15 +241,19 @@ def main():
     stride = max(1, args.stride)
     for i in range(0, L, stride):
         pose_frame(i)
+        # Centre the dancer horizontally on the pelvis...
         arm.location = (0.0, 0.0, 0.0)
         bpy.context.view_layer.update()
         pelvis = whead("m_avg_Pelvis")
-        foot_z = min(
-            wtail(b).z for b in FOOT_BONES if b in arm.pose.bones
-        )
-        # Lock root horizontally (centre the dancer) and ground the planted foot at z=0.
-        arm.location = (-pelvis.x, -pelvis.y, -foot_z)
+        arm.location = (-pelvis.x, -pelvis.y, 0.0)
         bpy.context.view_layer.update()
+        # ...then ground the lowest posed *mesh* vertex (foot sole) at z=0 so the robot
+        # rests on the floor instead of sinking its feet through it.
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        mz = lowest_mesh_z(depsgraph, robot_meshes)
+        if mz != float("inf"):
+            arm.location = (arm.location.x, arm.location.y, -mz)
+            bpy.context.view_layer.update()
         scene.render.filepath = f"{frames_dir}/frame_{i:05d}.png"
         bpy.ops.render.render(write_still=True)
     print(f"BLENDER_RENDERED {L} frames -> {frames_dir}")
