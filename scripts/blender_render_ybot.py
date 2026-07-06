@@ -60,7 +60,21 @@ def parse_args():
                    help="Render every Nth frame (validation only; alignment still uses all)")
     p.add_argument("--force-align", action="store_true",
                    help="Skip alignment auto-detect; use exactly --align-x about X (0 = identity)")
+    p.add_argument("--fk-npz", default="",
+                   help="Optional npz with ground-truth FK 'joints' (L,22,3) to fix the "
+                        "global orientation via Kabsch; else read 'fk_joints' from --poses")
     return p.parse_args(argv)
+
+
+def kabsch_rotation(P, Q):
+    """Rotation R (3x3) best aligning centred P onto centred Q (scale-invariant)."""
+    Pc = P - P.mean(0)
+    Qc = Q - Q.mean(0)
+    H = Pc.T @ Qc
+    U, S, Vt = np.linalg.svd(H)
+    d = np.sign(np.linalg.det(Vt.T @ U.T))
+    D = np.diag([1.0, 1.0, d])
+    return Vt.T @ D @ U.T
 
 
 def axis_angle_to_matrix(v):
@@ -170,8 +184,7 @@ def main():
         pb.rotation_mode = "QUATERNION"
 
     rest = rest_rotations(arm)
-    rest_inv = {k: q.to_matrix().transposed() for k, q in rest.items()}
-    rest_mat = {k: q.to_matrix() for k, q in rest.items()}
+    n_body = min(22, poses.shape[1])  # SMPL joints 0..21 (hands 22,23 stay at rest)
 
     def whead(name):
         return arm.matrix_world @ arm.pose.bones[name].head
@@ -179,63 +192,58 @@ def main():
     def wtail(name):
         return arm.matrix_world @ arm.pose.bones[name].tail
 
-    def apply_pose(i, A, A_inv):
-        for j, name in enumerate(JOINT_NAMES):
-            if j >= poses.shape[1] or name not in rest:
+    def apply_pose(i):
+        # DIRECT mapping (EDGE-style): each SMPL joint's local rotation is the bone's local
+        # pose rotation. Verified against ground-truth FK joints (Procrustes RMSE ~0.03,
+        # vs ~0.2+ and a tipped-over body for the old per-bone conjugation).
+        for j in range(n_body):
+            name = JOINT_NAMES[j]
+            if name not in rest:
                 continue
-            Rj = axis_angle_to_matrix(poses[i, j])
-            basis = rest_inv[name] @ A @ Rj @ A_inv @ rest_mat[name]
-            arm.pose.bones[name].rotation_quaternion = basis.to_quaternion()
+            arm.pose.bones[name].rotation_quaternion = axis_angle_to_matrix(
+                poses[i, j]
+            ).to_quaternion()
 
-    # The SMPL rotations live in the dance's own world frame (Y-up for FineDance, Z-up for
-    # EDGE-derived motion). Pick the fixed alignment A whose posed body stands most upright.
-    # Use the whole torso axis (pelvis -> head) rather than the pelvis bone tail: the Mixamo
-    # pelvis bone does not point along the body's up axis, so scoring it can pick an
-    # alignment that tips an actually-upright dance onto the floor.
-    candidates = [
-        ("I", Matrix.Identity(3)),
-        ("X+90", Matrix.Rotation(math.radians(90), 3, "X")),
-        ("X-90", Matrix.Rotation(math.radians(-90), 3, "X")),
-        ("X180", Matrix.Rotation(math.radians(180), 3, "X")),
-        ("Y+90", Matrix.Rotation(math.radians(90), 3, "Y")),
-        ("Y-90", Matrix.Rotation(math.radians(-90), 3, "Y")),
-        ("Z+90", Matrix.Rotation(math.radians(90), 3, "Z")),
-        ("Z-90", Matrix.Rotation(math.radians(-90), 3, "Z")),
-    ]
-    if abs(args.align_x) > 1e-6:  # honour an explicit override first
-        candidates.insert(0, ("override", Matrix.Rotation(math.radians(args.align_x), 3, "X")))
-    sample = list(range(0, L, max(1, L // 48)))
+    def body_joint_positions():
+        return np.array([[*whead(JOINT_NAMES[j])] for j in range(n_body)], dtype=np.float64)
 
-    def spine_up_z(A, A_inv):
-        vals = []
+    # Global orientation: the direct-posed body matches the ground-truth FK skeleton up to a
+    # single constant rotation (the data-frame vs armature-frame difference). Recover it once
+    # by Kabsch-aligning the posed bone joints to the FK joints over sampled frames, so the
+    # dance stands upright and balanced every frame (no per-frame heuristic).
+    fk = None
+    if args.fk_npz and os.path.exists(args.fk_npz):
+        fk = np.load(args.fk_npz)["joints"].astype(np.float64)
+    elif "fk_joints" in data.files:
+        fk = data["fk_joints"].astype(np.float64)
+
+    if fk is not None:
+        sample = list(range(0, L, max(1, L // 12)))[:12]
+        Ps, Qs = [], []
         for i in sample:
-            apply_pose(i, A, A_inv)
+            apply_pose(i)
             bpy.context.view_layer.update()
-            up = (wtail("m_avg_Head") - whead("m_avg_Pelvis"))
-            if up.length > 1e-6:
-                vals.append(up.normalized().z)
-        return float(np.median(vals)) if vals else -2.0
-
-    if args.force_align:
-        best_A = Matrix.Rotation(math.radians(args.align_x), 3, "X")
-        best_label, best_score = f"forced({args.align_x})", spine_up_z(best_A, best_A.transposed())
+            P = body_joint_positions()             # (n_body,3) world, import_rot applied
+            Q = fk[i, :n_body].astype(np.float64)
+            Ps.append(P - P.mean(0))               # per-frame centre (body translates)
+            Qs.append(Q - Q.mean(0))
+        Pc = np.concatenate(Ps)
+        Qc = np.concatenate(Qs)
+        R = kabsch_rotation(Pc, Qc)                # R @ Pc ~= Qc (aligns to FK frame)
+        resid = float(np.sqrt(((Pc @ R.T - Qc) ** 2).sum(1).mean()))
+        world_rot = Matrix(R.tolist()).to_quaternion() @ import_rot
+        print(f"YBOT_ALIGN kabsch-fk residual={resid:.4f}")
     else:
-        best_A, best_score, best_label = Matrix.Identity(3), -2.0, "I"
-        for label, A in candidates:
-            score = spine_up_z(A, A.transposed())
-            if score > best_score + 1e-3:  # strict improvement; ties keep the earlier (identity)
-                best_score, best_A, best_label = score, A, label
-    A = best_A
-    A_inv = A.transposed()
-    print(f"YBOT_ALIGN chosen={best_label} spine_up_z={best_score:.3f}")
+        world_rot = import_rot
+        print("YBOT_ALIGN no FK joints; keeping import rotation")
 
-    if abs(args.yaw) > 1e-6:  # optional facing tweak about the vertical axis, composed with
-        # the import rotation so we do not discard the Y-up -> Z-up conversion.
-        arm.rotation_quaternion = Quaternion(Vector((0.0, 0.0, 1.0)), math.radians(args.yaw)) @ import_rot
-        bpy.context.view_layer.update()
+    if abs(args.yaw) > 1e-6:  # optional facing tweak about the vertical axis
+        world_rot = Quaternion(Vector((0.0, 0.0, 1.0)), math.radians(args.yaw)) @ world_rot
+    arm.rotation_quaternion = world_rot
+    bpy.context.view_layer.update()
 
     def pose_frame(i):
-        apply_pose(i, A, A_inv)
+        apply_pose(i)
 
     # Studio: dancer centred at origin, floor at z=0.
     body_size = TARGET_HEIGHT

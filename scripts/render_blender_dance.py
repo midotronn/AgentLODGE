@@ -78,11 +78,13 @@ def compute_smplx_meshes(
 
 def compute_smpl_poses(
     motion139: np.ndarray, lodge_code_path: Path
-) -> tuple[np.ndarray, np.ndarray]:
-    """Return (poses (L, 24, 3) SMPL axis-angle, trans (L, 3)) for a 139-dim motion.
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return (poses (L, 24, 3) SMPL axis-angle, trans (L, 3), fk_joints (L, 22, 3)).
 
     Joints 0-21 come from the motion's rot6d; the two SMPL hand joints (22, 23) are left
-    at zero. These drive EDGE's Y-Bot ``m_avg_*`` armature bones directly.
+    at zero. ``fk_joints`` are the ground-truth SMPL joint positions from forward kinematics
+    and are used to fix the Y-Bot's global orientation (Kabsch), so the robot stands
+    upright and balanced exactly like the reference skeleton.
     """
     import torch
 
@@ -93,15 +95,27 @@ def compute_smpl_poses(
     trans = native[:, 4:7].astype(np.float32)
     rot6d = native[:, 7:139].reshape(-1, 22, 6)
 
+    jpath = Path(lodge_code_path) / "data" / "smplx_neu_J_1.npy"
     with use_code_paths(*lodge_import_paths(lodge_code_path)):
-        from dld.data.render_joints.smplfk import ax_from_6v
+        from dld.data.render_joints.smplfk import SMPLX_Skeleton, ax_from_6v
 
         ax = ax_from_6v(torch.from_numpy(rot6d).float()).reshape(-1, 22, 3).numpy()
+        fk_joints = np.zeros((ax.shape[0], 22, 3), dtype=np.float32)
+        if jpath.exists():
+            poses66 = torch.from_numpy(ax.reshape(-1, 66)).float()
+            fk = SMPLX_Skeleton(device="cpu", batch=1, Jpath=str(jpath))
+            fk_joints = (
+                fk.forward(poses66, torch.from_numpy(trans).float())
+                .detach()
+                .cpu()
+                .numpy()[:, :22]
+                .astype(np.float32)
+            )
 
     length = ax.shape[0]
     poses = np.zeros((length, 24, 3), dtype=np.float32)
     poses[:, :22] = ax
-    return poses, trans
+    return poses, trans, fk_joints
 
 
 def _ground_verts(verts: np.ndarray, fps: int = 30) -> np.ndarray:
@@ -269,13 +283,13 @@ def render_ybot_dance(
     motion = np.load(motion_npy)
 
     logger.info("Computing SMPL poses for %d frames...", motion.shape[0])
-    poses, trans = compute_smpl_poses(motion, lodge_code_path)
+    poses, trans, fk_joints = compute_smpl_poses(motion, lodge_code_path)
 
     work = Path(tempfile.mkdtemp(prefix="blender_ybot_"))
     poses_npz = work / "poses.npz"
     frames_dir = work / "frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
-    np.savez(poses_npz, poses=poses, trans=trans)
+    np.savez(poses_npz, poses=poses, trans=trans, fk_joints=fk_joints)
 
     cmd = [
         str(blender_bin), "-b", "-noaudio", "-P", str(blender_script), "--",
