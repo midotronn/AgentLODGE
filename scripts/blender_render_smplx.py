@@ -30,6 +30,8 @@ def parse_args():
     p.add_argument("--height", type=int, default=960)
     p.add_argument("--samples", type=int, default=64)
     p.add_argument("--texture", default="")
+    p.add_argument("--color", default="0.32,0.45,0.55",
+                   help="Body base colour r,g,b in 0-1 (ignored if --texture set)")
     return p.parse_args(argv)
 
 
@@ -45,18 +47,22 @@ def make_material(texture_path: str):
     nt = mat.node_tree
     nt.nodes.clear()
     out = nt.nodes.new("ShaderNodeOutputMaterial")
+def make_material(texture_path: str, color):
+    """Metallic body material (EDGE-style). ``color`` is an (r,g,b) base colour."""
+    mat = bpy.data.materials.new("SMPLX_Body")
+    mat.use_nodes = True
+    nt = mat.node_tree
+    nt.nodes.clear()
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
     bsdf = nt.nodes.new("ShaderNodeBsdfPrincipled")
-    bsdf.inputs["Roughness"].default_value = 0.62
-    if "Specular IOR Level" in bsdf.inputs:
-        bsdf.inputs["Specular IOR Level"].default_value = 0.35
-    if "Subsurface Weight" in bsdf.inputs:
-        bsdf.inputs["Subsurface Weight"].default_value = 0.10
+    bsdf.inputs["Metallic"].default_value = 0.9
+    bsdf.inputs["Roughness"].default_value = 0.35
     if texture_path:
         tex = nt.nodes.new("ShaderNodeTexImage")
         tex.image = bpy.data.images.load(texture_path)
         nt.links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
     else:
-        bsdf.inputs["Base Color"].default_value = (0.72, 0.71, 0.70, 1.0)
+        bsdf.inputs["Base Color"].default_value = (color[0], color[1], color[2], 1.0)
     nt.links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
     return mat
 
@@ -84,51 +90,73 @@ def world_bounds(verts_all):
 
 
 def setup_world_and_ground(bmin, bmax):
-    # soft, bright studio backdrop
+    """Studio cyclorama: a seamless curved backdrop (floor blends up into a back wall) lit
+    to fade from a bright pool into darker grey, with a dim world so the spotlight reads."""
     world = bpy.data.worlds.new("W")
     world.use_nodes = True
     bg = world.node_tree.nodes.get("Background")
     if bg:
-        bg.inputs[0].default_value = (0.90, 0.91, 0.93, 1.0)
-        bg.inputs[1].default_value = 0.9
+        bg.inputs[0].default_value = (0.045, 0.045, 0.05, 1.0)
+        bg.inputs[1].default_value = 1.0
     bpy.context.scene.world = world
 
     cx = 0.5 * (bmin[0] + bmax[0])
     cy = 0.5 * (bmin[1] + bmax[1])
     floor_z = float(bmin[2])
-    bpy.ops.mesh.primitive_plane_add(size=60.0, location=(cx, cy, floor_z))
-    ground = bpy.context.active_object
-    gmat = bpy.data.materials.new("Ground")
+
+    width, front, back, height, radius = 60.0, 22.0, 14.0, 22.0, 6.0
+    # Profile in (y, z), front -> back along the floor, then a quarter-circle up into a wall.
+    prof = [(front, 0.0), (-back + radius, 0.0)]
+    ccy = -back + radius
+    for a in range(1, 13):
+        ang = (math.pi / 2) * (a / 12)
+        prof.append((ccy - radius * math.sin(ang), radius * (1 - math.cos(ang))))
+    prof.append((-back, height))
+
+    x0, x1 = cx - width / 2, cx + width / 2
+    verts, faces = [], []
+    n = len(prof)
+    for (py, pz) in prof:
+        verts.append((x0, cy + py, floor_z + pz))
+        verts.append((x1, cy + py, floor_z + pz))
+    for i in range(n - 1):
+        a0, a1 = 2 * i, 2 * i + 1
+        b0, b1 = 2 * (i + 1), 2 * (i + 1) + 1
+        faces.append((a0, b0, b1, a1))
+
+    mesh = bpy.data.meshes.new("cyclo")
+    mesh.from_pydata(verts, [], faces)
+    mesh.update()
+    for poly in mesh.polygons:
+        poly.use_smooth = True
+    cyc = bpy.data.objects.new("Cyclorama", mesh)
+    bpy.context.collection.objects.link(cyc)
+    gmat = bpy.data.materials.new("Studio")
     gmat.use_nodes = True
-    gbsdf = gmat.node_tree.nodes.get("Principled BSDF")
-    if gbsdf:
-        gbsdf.inputs["Base Color"].default_value = (0.90, 0.90, 0.92, 1.0)
-        gbsdf.inputs["Roughness"].default_value = 0.75
-        if "Specular IOR Level" in gbsdf.inputs:
-            gbsdf.inputs["Specular IOR Level"].default_value = 0.2
-    ground.data.materials.append(gmat)
+    gb = gmat.node_tree.nodes.get("Principled BSDF")
+    if gb:
+        gb.inputs["Base Color"].default_value = (0.55, 0.55, 0.57, 1.0)
+        gb.inputs["Roughness"].default_value = 0.85
+    cyc.data.materials.append(gmat)
     return cx, cy, floor_z
 
 
 def setup_lights(cx, cy, top_z):
-    # Soft studio setup: key sun + two fills for even, EDGE-like lighting.
-    sun = bpy.data.objects.new("Sun", bpy.data.lights.new("Sun", "SUN"))
-    sun.data.energy = 3.0
-    sun.data.angle = math.radians(6.0)  # soft shadows
-    sun.rotation_euler = (math.radians(48.0), math.radians(12.0), math.radians(35.0))
-    bpy.context.collection.objects.link(sun)
-
-    key = bpy.data.objects.new("Key", bpy.data.lights.new("Key", "AREA"))
-    key.data.energy = 600.0
-    key.data.size = 8.0
-    key.location = (cx + 4.0, cy - 5.0, top_z + 3.0)
-    bpy.context.collection.objects.link(key)
+    """A key spot from high-front makes the bright floor pool + vignette; a soft area fill
+    keeps the character readable. Returns the spot so it can follow the dancer."""
+    spot = bpy.data.objects.new("Spot", bpy.data.lights.new("Spot", "SPOT"))
+    spot.data.energy = 6000.0
+    spot.data.spot_size = math.radians(60.0)
+    spot.data.spot_blend = 0.5
+    spot.data.shadow_soft_size = 1.2
+    bpy.context.collection.objects.link(spot)
 
     fill = bpy.data.objects.new("Fill", bpy.data.lights.new("Fill", "AREA"))
-    fill.data.energy = 250.0
-    fill.data.size = 10.0
-    fill.location = (cx - 5.0, cy - 3.0, top_z + 1.5)
+    fill.data.energy = 120.0
+    fill.data.size = 12.0
+    fill.location = (cx - 4.0, cy - 6.0, top_z + 2.0)
     bpy.context.collection.objects.link(fill)
+    return spot
 def _smooth(xy: np.ndarray, k: int = 11) -> np.ndarray:
     """Moving-average smooth an (L, 2) path so the follow camera glides, not jitters."""
     if xy.shape[0] < 3:
@@ -150,7 +178,7 @@ def setup_follow_camera(centroids, body_size, floor_z):
     """
     dist = max(body_size, 1.0) * 2.6
     target_z = floor_z + 0.55 * body_size
-    offset = np.array([dist * 0.55, -dist, body_size * 0.45])
+    offset = np.array([dist * 0.35, -dist, body_size * 0.30])
 
     cam_data = bpy.data.cameras.new("Cam")
     cam_data.lens = 50.0
@@ -192,12 +220,16 @@ def main():
     uv = data["uv"] if "uv" in data.files else None
 
     clear_scene()
-    material = make_material(args.texture)
+    try:
+        color = tuple(float(c) for c in args.color.split(","))[:3]
+    except Exception:
+        color = (0.32, 0.45, 0.55)
+    material = make_material(args.texture, color)
     obj, mesh = build_mesh(verts[0], faces, uv, material)
 
     bmin, bmax = world_bounds(verts)
     cx, cy, floor_z = setup_world_and_ground(bmin, bmax)
-    setup_lights(cx, cy, float(bmax[2]))
+    spot = setup_lights(cx, cy, float(bmax[2]))
 
     # Body size from per-frame extents (not the whole trajectory) keeps the dancer large.
     per_frame_ext = verts.max(axis=1) - verts.min(axis=1)  # (L, 3)
@@ -206,6 +238,14 @@ def main():
     cam, target, offset, target_z, follow_xy = setup_follow_camera(
         centroids, body_size, floor_z
     )
+    # The key spot tracks the same target and rides high-front of the dancer so the bright
+    # floor pool + vignette move with the character (EDGE-style).
+    tc = spot.constraints.new("TRACK_TO")
+    tc.target = target
+    tc.track_axis = "TRACK_NEGATIVE_Z"
+    tc.up_axis = "UP_Y"
+    spot_high = float(floor_z) + body_size * 4.0
+    spot_front = body_size * 2.2
     configure_render(args.width, args.height, args.samples)
 
     scene = bpy.context.scene
@@ -216,6 +256,8 @@ def main():
         tx, ty = float(follow_xy[i, 0]), float(follow_xy[i, 1])
         target.location = (tx, ty, target_z)
         cam.location = (tx + offset[0], ty + offset[1], target_z + offset[2])
+        front_sign = -1.0 if offset[1] < 0 else 1.0
+        spot.location = (tx, ty + front_sign * spot_front, spot_high)
         scene.render.filepath = f"{frames_dir}/frame_{i:05d}.png"
         bpy.ops.render.render(write_still=True)
     print(f"BLENDER_RENDERED {verts.shape[0]} frames -> {frames_dir}")
