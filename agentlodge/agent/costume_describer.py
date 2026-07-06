@@ -42,7 +42,7 @@ def _parse_response(text: str) -> str:
     match = re.search(r"\{.*\}", text, re.DOTALL)
     if not match:
         raise ValueError("Costume agent response did not contain JSON")
-    payload = json.loads(match.group())
+    payload = json.loads(match.group(), strict=False)
     description = str(payload.get("costume_description", "")).strip()
     if not description:
         raise ValueError("Costume agent returned an empty description")

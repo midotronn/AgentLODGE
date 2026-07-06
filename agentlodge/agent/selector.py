@@ -109,7 +109,10 @@ def _parse_response(text: str) -> SelectionResult:
     match = re.search(r"\{.*\}", text, re.DOTALL)
     if not match:
         raise ValueError("Agent response did not contain JSON")
-    payload = json.loads(match.group())
+    # strict=False: LLMs often emit literal newlines/tabs inside string values, which
+    # strict JSON rejects ("Invalid control character"). Tolerate them so a well-formed
+    # choice isn't discarded over whitespace in the reasoning text.
+    payload = json.loads(match.group(), strict=False)
     selected = str(payload["selected_model"]).lower().strip()
     if selected not in {"lodge", "edge"}:
         raise ValueError(f"Invalid selected_model: {selected}")
