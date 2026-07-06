@@ -258,7 +258,7 @@ def render_ybot_dance(
     ybot_fbx: Path,
     audio_path: Path | None = None,
     color: str = "0.5,0.5,0.52",
-    align_x: float = -90.0,
+    align_x: float = 0.0,
     img_size: tuple[int, int] = (720, 720),
     samples: int = 32,
     fps: int = 30,
@@ -311,7 +311,7 @@ def main() -> int:
     parser.add_argument("--character", choices=["smplx", "ybot"], default="smplx")
     parser.add_argument("--ybot-fbx", default="")
     parser.add_argument("--color", default="0.5,0.5,0.52")
-    parser.add_argument("--align-x", type=float, default=-90.0)
+    parser.add_argument("--align-x", type=float, default=0.0)
     parser.add_argument("--audio", default="")
     parser.add_argument("--uv-npz", default="")
     parser.add_argument("--texture", default="")

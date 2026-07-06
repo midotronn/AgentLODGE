@@ -56,6 +56,8 @@ def parse_args():
                    help="Degrees about X aligning SMPL local rotations to the armature frame")
     p.add_argument("--yaw", type=float, default=0.0,
                    help="Extra degrees about Z to face the dancer toward the camera")
+    p.add_argument("--stride", type=int, default=1,
+                   help="Render every Nth frame (validation only; alignment still uses all)")
     return p.parse_args(argv)
 
 
@@ -129,29 +131,14 @@ def main():
     style_robot(arm, color)
     normalise_scale(arm)
 
-    bpy.ops.wm.read_factory_settings(use_empty=True)
-    arm = import_ybot(args.ybot)
-    style_robot(arm, color)
-    normalise_scale(arm)
-
     arm.rotation_mode = "QUATERNION"
     arm.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
     for pb in arm.pose.bones:
         pb.rotation_mode = "QUATERNION"
 
-    A = Matrix.Rotation(math.radians(args.align_x), 3, "X")
-    A_inv = A.transposed()
     rest = rest_rotations(arm)
     rest_inv = {k: q.to_matrix().transposed() for k, q in rest.items()}
     rest_mat = {k: q.to_matrix() for k, q in rest.items()}
-
-    def pose_frame(i):
-        for j, name in enumerate(JOINT_NAMES):
-            if j >= poses.shape[1] or name not in rest:
-                continue
-            Rj = axis_angle_to_matrix(poses[i, j])
-            basis = rest_inv[name] @ A @ Rj @ A_inv @ rest_mat[name]
-            arm.pose.bones[name].rotation_quaternion = basis.to_quaternion()
 
     def whead(name):
         return arm.matrix_world @ arm.pose.bones[name].head
@@ -159,22 +146,51 @@ def main():
     def wtail(name):
         return arm.matrix_world @ arm.pose.bones[name].tail
 
-    # The dance's global_orient leaves the posed body in the data's own up-axis (FineDance
-    # is Y-up); detect it from the mean spine vector and rotate the whole rig so the dancer
-    # stands on the Blender Z-up floor (matches the smooth-body _orient_verts_zup step).
-    step = max(1, L // 12)
-    spine = Vector((0.0, 0.0, 0.0))
-    for i in range(0, L, step):
-        pose_frame(i)
+    def apply_pose(i, A, A_inv):
+        for j, name in enumerate(JOINT_NAMES):
+            if j >= poses.shape[1] or name not in rest:
+                continue
+            Rj = axis_angle_to_matrix(poses[i, j])
+            basis = rest_inv[name] @ A @ Rj @ A_inv @ rest_mat[name]
+            arm.pose.bones[name].rotation_quaternion = basis.to_quaternion()
+
+    # The SMPL rotations live in the dance's own world frame (Y-up for FineDance, Z-up for
+    # EDGE-derived motion). Rather than guess, pick the fixed alignment A whose posed pelvis
+    # stands most consistently upright (bone axis -> +Z) across sampled frames. This keeps
+    # the robot vertical every frame while preserving its yaw/facing and limb articulation.
+    candidates = [
+        ("I", Matrix.Identity(3)),
+        ("X+90", Matrix.Rotation(math.radians(90), 3, "X")),
+        ("X-90", Matrix.Rotation(math.radians(-90), 3, "X")),
+        ("X180", Matrix.Rotation(math.radians(180), 3, "X")),
+        ("Y+90", Matrix.Rotation(math.radians(90), 3, "Y")),
+        ("Y-90", Matrix.Rotation(math.radians(-90), 3, "Y")),
+        ("Z+90", Matrix.Rotation(math.radians(90), 3, "Z")),
+        ("Z-90", Matrix.Rotation(math.radians(-90), 3, "Z")),
+    ]
+    if abs(args.align_x) > 1e-6:  # honour an explicit override first
+        candidates.insert(0, ("override", Matrix.Rotation(math.radians(args.align_x), 3, "X")))
+    sample = list(range(0, L, max(1, L // 8)))
+    best_A, best_score = Matrix.Identity(3), -2.0
+    for _label, A in candidates:
+        A_inv = A.transposed()
+        zsum = 0.0
+        for i in sample:
+            apply_pose(i, A, A_inv)
+            bpy.context.view_layer.update()
+            zsum += (wtail("m_avg_Pelvis") - whead("m_avg_Pelvis")).normalized().z
+        score = zsum / len(sample)
+        if score > best_score + 1e-3:  # strict improvement; ties keep the earlier (identity)
+            best_score, best_A = score, A
+    A = best_A
+    A_inv = A.transposed()
+
+    if abs(args.yaw) > 1e-6:  # optional facing tweak (about the vertical axis)
+        arm.rotation_quaternion = Quaternion(Vector((0.0, 0.0, 1.0)), math.radians(args.yaw))
         bpy.context.view_layer.update()
-        spine += (wtail("m_avg_Head") - whead("m_avg_Pelvis"))
-    if spine.length > 1e-6:
-        spine.normalize()
-        G = spine.rotation_difference(Vector((0.0, 0.0, 1.0)))
-        if abs(args.yaw) > 1e-6:
-            G = Quaternion(Vector((0.0, 0.0, 1.0)), math.radians(args.yaw)) @ G
-        arm.rotation_quaternion = G
-        bpy.context.view_layer.update()
+
+    def pose_frame(i):
+        apply_pose(i, A, A_inv)
 
     # Studio: dancer centred at origin, floor at z=0.
     body_size = TARGET_HEIGHT
@@ -194,7 +210,8 @@ def main():
 
     scene = bpy.context.scene
     frames_dir = args.frames_dir.rstrip("/")
-    for i in range(L):
+    stride = max(1, args.stride)
+    for i in range(0, L, stride):
         pose_frame(i)
         arm.location = (0.0, 0.0, 0.0)
         bpy.context.view_layer.update()
