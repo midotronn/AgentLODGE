@@ -48,10 +48,13 @@ class Settings:
     min_audio_seconds: float
     max_edge_slices: int | None
     render_backend: str = "stick"
+    render_character: str = "smplx"
     blender_bin: Path | None = None
     smplx_model_dir: Path | None = None
     smplx_uv_path: Path | None = None
     smplx_texture_path: Path | None = None
+    ybot_fbx_path: Path | None = None
+    render_color: str = "0.5,0.5,0.52"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -81,10 +84,13 @@ class Settings:
             min_audio_seconds=float(os.getenv("AGENTLODGE_MIN_AUDIO_SECONDS", "20")),
             max_edge_slices=_optional_int(os.getenv("AGENTLODGE_MAX_EDGE_SLICES", "7")),
             render_backend=os.getenv("AGENTLODGE_RENDER_BACKEND", "stick").lower(),
+            render_character=os.getenv("AGENTLODGE_RENDER_CHARACTER", "smplx").lower(),
             blender_bin=_opt_path(os.getenv("BLENDER_BIN")),
             smplx_model_dir=_opt_path(os.getenv("SMPLX_MODEL_DIR")),
             smplx_uv_path=_opt_path(os.getenv("SMPLX_UV_PATH")),
             smplx_texture_path=_opt_path(os.getenv("SMPLX_TEXTURE_PATH")),
+            ybot_fbx_path=_opt_path(os.getenv("YBOT_FBX_PATH")),
+            render_color=os.getenv("AGENTLODGE_RENDER_COLOR", "0.5,0.5,0.52"),
         )
 
     @classmethod
@@ -112,10 +118,13 @@ class Settings:
             min_audio_seconds=float(data.get("min_audio_seconds", 20)),
             max_edge_slices=data.get("max_edge_slices"),
             render_backend=data.get("render_backend", "stick"),
+            render_character=data.get("render_character", "smplx"),
             blender_bin=_opt_path(data.get("blender_bin")),
             smplx_model_dir=_opt_path(data.get("smplx_model_dir")),
             smplx_uv_path=_opt_path(data.get("smplx_uv_path")),
             smplx_texture_path=_opt_path(data.get("smplx_texture_path")),
+            ybot_fbx_path=_opt_path(data.get("ybot_fbx_path")),
+            render_color=data.get("render_color", "0.5,0.5,0.52"),
         )
 
     def validate_image_backend(self) -> None:

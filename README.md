@@ -9,7 +9,7 @@ End-to-end pipeline that accepts a song, generates dances with **LODGE** and **E
 1. **Audio preprocessing** — Librosa 35-dim features (LODGE) and Jukebox embeddings (EDGE) at 30 FPS
 2. **Parallel dance generation** — LODGE global+PDDM and EDGE long-form (5s clips, 2.5s overlap)
 3. **Dance selection agent** — an LLM reasons over per-window **long-term coherence** signals (seam smoothness, jitter, foot stability, sustained beat-sync trend, variety), scores each dance on a coherence rubric, and picks the more coherent long-form dance; beat alignment and diversity are secondary tie-breakers
-4. **Dance video** — the selected motion is rendered to an mp4 (audio muxed). Two backends: a fast **stick figure** (SMPL forward kinematics + matplotlib, no extra assets, default) or a shaded **Blender SMPL-X mesh** (`AGENTLODGE_RENDER_BACKEND=blender`, requires Blender + the licence-gated SMPL-X body model)
+4. **Dance video** — the selected motion is rendered to an mp4 (audio muxed). Backends (set with `AGENTLODGE_RENDER_BACKEND`): a fast **stick figure** (SMPL forward kinematics + matplotlib, no extra assets, default), or **Blender** 3D rendering in an EDGE-style studio (cyclorama backdrop, spotlight vignette, follow camera). The Blender character is chosen with `AGENTLODGE_RENDER_CHARACTER`: `smplx` (smooth SMPL-X mesh, needs the licence-gated SMPL-X body model) or `ybot` (EDGE's segmented Mixamo Y-Bot robot, needs EDGE's `ybot.fbx` — no SMPL-X model required)
 5. **Costume description agent** — an LLM turns the song's acoustic features (tempo, energy, timbre, key/mode, rhythmic density) plus the `LODGE_GENRE` hint into a costume description
 6. **Costume image generation** — OpenAI (`gpt-image-1`) or Gemini Imagen renders the audio-derived description
 
@@ -83,6 +83,7 @@ Written to `output_dir`:
 |------|-------------|
 | `selected_dance.npy` | Selected motion array `(L, 139)` in SMPL format |
 | `dance_stick_figure.mp4` | Stick-figure animation of the selected dance, with input audio |
+| `dance_blender.mp4` | Blender studio render (SMPL-X mesh or EDGE Y-Bot robot), when `AGENTLODGE_RENDER_BACKEND=blender` |
 | `costume_output.png` | Generated costume illustration |
 | `pipeline_log.json` | Selection reasoning, metrics, and errors |
 

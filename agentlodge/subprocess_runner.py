@@ -203,3 +203,39 @@ def run_blender_video_subprocess(
     result = _run(cmd, timeout_seconds=timeout_seconds, step="Blender mesh video")
     _raise_on_failure(result, "Blender mesh video render")
 
+
+def run_ybot_video_subprocess(
+    lodge_code_path: Path,
+    motion_npy: Path,
+    output_mp4: Path,
+    blender_bin: Path,
+    ybot_fbx: Path,
+    *,
+    audio_path: Path | None = None,
+    color: str = "0.5,0.5,0.52",
+    width: int = 720,
+    height: int = 720,
+    samples: int = 32,
+    timeout_seconds: int | None = None,
+) -> None:
+    """Render the dance as EDGE's Mixamo Y-Bot robot in Blender (needs EDGE's ybot.fbx)."""
+    python = _venv_python(lodge_code_path, "LODGE")
+    cmd = [
+        str(python),
+        str(SCRIPTS_DIR / "render_blender_dance.py"),
+        "--agentlodge-root", str(AGENTLODGE_ROOT),
+        "--motion-npy", str(motion_npy),
+        "--output-mp4", str(output_mp4),
+        "--lodge-code-path", str(lodge_code_path),
+        "--blender-bin", str(blender_bin),
+        "--blender-script", str(SCRIPTS_DIR / "blender_render_ybot.py"),
+        "--character", "ybot",
+        "--ybot-fbx", str(ybot_fbx),
+        "--color", color,
+        "--width", str(width), "--height", str(height), "--samples", str(samples),
+    ]
+    if audio_path is not None:
+        cmd.extend(["--audio", str(audio_path)])
+    result = _run(cmd, timeout_seconds=timeout_seconds, step="Blender Y-Bot video")
+    _raise_on_failure(result, "Blender Y-Bot video render")
+

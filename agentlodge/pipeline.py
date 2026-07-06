@@ -25,6 +25,7 @@ from agentlodge.subprocess_runner import (
     run_edge_inference_subprocess,
     run_lodge_inference_subprocess,
     run_stick_video_subprocess,
+    run_ybot_video_subprocess,
 )
 
 logger = logging.getLogger(__name__)
@@ -362,18 +363,54 @@ def run_pipeline(
 
     stick_figure_video: Path | None = None
     if render_video:
+        want_ybot = (
+            settings.render_backend == "blender"
+            and settings.render_character == "ybot"
+        )
+        use_ybot = (
+            want_ybot
+            and settings.blender_bin is not None
+            and settings.ybot_fbx_path is not None
+        )
         use_blender = (
             settings.render_backend == "blender"
+            and not want_ybot
             and settings.blender_bin is not None
             and settings.smplx_model_dir is not None
         )
-        if settings.render_backend == "blender" and not use_blender:
+        if want_ybot and not use_ybot:
+            msg = (
+                "render_character=ybot but BLENDER_BIN/YBOT_FBX_PATH are not both set; "
+                "falling back to stick-figure rendering."
+            )
+            errors.append(msg)
+            logger.warning(msg)
+        elif settings.render_backend == "blender" and not use_blender and not want_ybot:
             msg = (
                 "render_backend=blender but BLENDER_BIN/SMPLX_MODEL_DIR are not both set; "
                 "falling back to stick-figure rendering."
             )
             errors.append(msg)
             logger.warning(msg)
+
+        if use_ybot:
+            stick_figure_video = out_dir / "dance_blender.mp4"
+            try:
+                run_ybot_video_subprocess(
+                    settings.lodge_code_path.resolve(),
+                    motion_path,
+                    stick_figure_video,
+                    settings.blender_bin.resolve(),
+                    settings.ybot_fbx_path.resolve(),
+                    audio_path=audio_path,
+                    color=settings.render_color,
+                )
+                logger.info("Saved Blender Y-Bot video to %s", stick_figure_video)
+            except Exception as exc:
+                msg = f"Blender Y-Bot video render failed: {exc}"
+                errors.append(msg)
+                logger.error(msg)
+                stick_figure_video = None  # fall through to stick figure
 
         if use_blender:
             stick_figure_video = out_dir / "dance_blender.mp4"
@@ -396,7 +433,7 @@ def run_pipeline(
                 stick_figure_video = None
                 use_blender = False  # fall through to stick figure
 
-        if not use_blender:
+        if stick_figure_video is None:
             stick_figure_video = out_dir / "dance_stick_figure.mp4"
             try:
                 run_stick_video_subprocess(

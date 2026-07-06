@@ -76,6 +76,34 @@ def compute_smplx_meshes(
     return verts, model.faces.astype(np.int32)
 
 
+def compute_smpl_poses(
+    motion139: np.ndarray, lodge_code_path: Path
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return (poses (L, 24, 3) SMPL axis-angle, trans (L, 3)) for a 139-dim motion.
+
+    Joints 0-21 come from the motion's rot6d; the two SMPL hand joints (22, 23) are left
+    at zero. These drive EDGE's Y-Bot ``m_avg_*`` armature bones directly.
+    """
+    import torch
+
+    from agentlodge.dance.format import to_native_finedance139
+    from agentlodge.env_paths import lodge_import_paths, use_code_paths
+
+    native = to_native_finedance139(np.asarray(motion139, dtype=np.float32))
+    trans = native[:, 4:7].astype(np.float32)
+    rot6d = native[:, 7:139].reshape(-1, 22, 6)
+
+    with use_code_paths(*lodge_import_paths(lodge_code_path)):
+        from dld.data.render_joints.smplfk import ax_from_6v
+
+        ax = ax_from_6v(torch.from_numpy(rot6d).float()).reshape(-1, 22, 3).numpy()
+
+    length = ax.shape[0]
+    poses = np.zeros((length, 24, 3), dtype=np.float32)
+    poses[:, :22] = ax
+    return poses, trans
+
+
 def _ground_verts(verts: np.ndarray, fps: int = 30) -> np.ndarray:
     """Rest the dancer on the floor: subtract a lightly smoothed per-frame lowest-vertex
     height so the planted foot sits at z=0 (instead of the whole clip floating above a
@@ -194,15 +222,96 @@ def render_blender_dance(
     return output_mp4
 
 
+def _encode_video(frames_dir: Path, work: Path, output_mp4: Path,
+                  audio_path: Path | None, fps: int, render_stdout: str = "") -> Path:
+    frames = sorted(frames_dir.glob("frame_*.png"))
+    if not frames:
+        raise RuntimeError(f"Blender produced no frames in {frames_dir}\n{render_stdout[-1500:]}")
+    logger.info("Blender rendered %d frames; encoding video...", len(frames))
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise RuntimeError("ffmpeg not found on PATH")
+    silent = work / "silent.mp4"
+    subprocess.run([
+        ffmpeg, "-loglevel", "error", "-y", "-framerate", str(fps),
+        "-i", str(frames_dir / "frame_%05d.png"),
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", str(silent),
+    ], check=True)
+    if audio_path is not None and Path(audio_path).exists():
+        subprocess.run([
+            ffmpeg, "-loglevel", "error", "-y", "-i", str(silent), "-i", str(audio_path),
+            "-shortest", "-c:v", "copy", "-c:a", "aac", "-q:a", "4", str(output_mp4),
+        ], check=True)
+    else:
+        shutil.copy(silent, output_mp4)
+    logger.info("Saved Blender dance video to %s", output_mp4)
+    return output_mp4
+
+
+def render_ybot_dance(
+    motion_npy: Path,
+    output_mp4: Path,
+    *,
+    lodge_code_path: Path,
+    blender_bin: Path,
+    blender_script: Path,
+    ybot_fbx: Path,
+    audio_path: Path | None = None,
+    color: str = "0.5,0.5,0.52",
+    align_x: float = -90.0,
+    img_size: tuple[int, int] = (720, 720),
+    samples: int = 32,
+    fps: int = 30,
+) -> Path:
+    """Render a dance as EDGE's Mixamo Y-Bot robot by posing ybot.fbx's SMPL armature."""
+    output_mp4 = Path(output_mp4).resolve()
+    output_mp4.parent.mkdir(parents=True, exist_ok=True)
+    motion = np.load(motion_npy)
+
+    logger.info("Computing SMPL poses for %d frames...", motion.shape[0])
+    poses, trans = compute_smpl_poses(motion, lodge_code_path)
+
+    work = Path(tempfile.mkdtemp(prefix="blender_ybot_"))
+    poses_npz = work / "poses.npz"
+    frames_dir = work / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    np.savez(poses_npz, poses=poses, trans=trans)
+
+    cmd = [
+        str(blender_bin), "-b", "-noaudio", "-P", str(blender_script), "--",
+        "--poses", str(poses_npz),
+        "--ybot", str(ybot_fbx),
+        "--frames-dir", str(frames_dir),
+        "--width", str(img_size[0]), "--height", str(img_size[1]),
+        "--samples", str(samples),
+        "--color", color,
+        "--align-x", str(align_x),
+    ]
+    logger.info("Rendering Y-Bot in Blender (%dx%d, %d samples)...", *img_size, samples)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Blender Y-Bot render failed (exit {result.returncode}).\n"
+            f"stdout tail:\n{result.stdout[-2000:]}\nstderr tail:\n{result.stderr[-2000:]}"
+        )
+    out = _encode_video(frames_dir, work, output_mp4, audio_path, fps, result.stdout)
+    shutil.rmtree(work, ignore_errors=True)
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--agentlodge-root", required=True)
     parser.add_argument("--motion-npy", required=True)
     parser.add_argument("--output-mp4", required=True)
     parser.add_argument("--lodge-code-path", required=True)
-    parser.add_argument("--smplx-model-dir", required=True)
+    parser.add_argument("--smplx-model-dir", default="")
     parser.add_argument("--blender-bin", required=True)
     parser.add_argument("--blender-script", required=True)
+    parser.add_argument("--character", choices=["smplx", "ybot"], default="smplx")
+    parser.add_argument("--ybot-fbx", default="")
+    parser.add_argument("--color", default="0.5,0.5,0.52")
+    parser.add_argument("--align-x", type=float, default=-90.0)
     parser.add_argument("--audio", default="")
     parser.add_argument("--uv-npz", default="")
     parser.add_argument("--texture", default="")
@@ -213,6 +322,23 @@ def main() -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     sys.path.insert(0, str(Path(args.agentlodge_root).resolve()))
+
+    if args.character == "ybot":
+        out = render_ybot_dance(
+            Path(args.motion_npy).resolve(),
+            Path(args.output_mp4).resolve(),
+            lodge_code_path=Path(args.lodge_code_path).resolve(),
+            blender_bin=Path(args.blender_bin).resolve(),
+            blender_script=Path(args.blender_script).resolve(),
+            ybot_fbx=Path(args.ybot_fbx).resolve(),
+            audio_path=Path(args.audio).resolve() if args.audio else None,
+            color=args.color,
+            align_x=args.align_x,
+            img_size=(args.width, args.height),
+            samples=args.samples,
+        )
+        print(f"Saved Blender dance video to {out} ({out.stat().st_size} bytes)")
+        return 0
 
     out = render_blender_dance(
         Path(args.motion_npy).resolve(),
