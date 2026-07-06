@@ -38,22 +38,25 @@ def clear_scene():
 
 
 def make_material(texture_path: str):
-    mat = bpy.data.materials.new("SMPLX_Skin")
+    """Clean matte body material (EDGE-style light grey). A texture is used only if
+    explicitly supplied; the default look is a uniform soft matte character."""
+    mat = bpy.data.materials.new("SMPLX_Body")
     mat.use_nodes = True
     nt = mat.node_tree
     nt.nodes.clear()
     out = nt.nodes.new("ShaderNodeOutputMaterial")
     bsdf = nt.nodes.new("ShaderNodeBsdfPrincipled")
-    bsdf.inputs["Roughness"].default_value = 0.55
-    # subsurface for a soft skin look (Blender 4.x uses a weight input)
+    bsdf.inputs["Roughness"].default_value = 0.62
+    if "Specular IOR Level" in bsdf.inputs:
+        bsdf.inputs["Specular IOR Level"].default_value = 0.35
     if "Subsurface Weight" in bsdf.inputs:
-        bsdf.inputs["Subsurface Weight"].default_value = 0.12
+        bsdf.inputs["Subsurface Weight"].default_value = 0.10
     if texture_path:
         tex = nt.nodes.new("ShaderNodeTexImage")
         tex.image = bpy.data.images.load(texture_path)
         nt.links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
     else:
-        bsdf.inputs["Base Color"].default_value = (0.62, 0.68, 0.80, 1.0)
+        bsdf.inputs["Base Color"].default_value = (0.72, 0.71, 0.70, 1.0)
     nt.links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
     return mat
 
@@ -81,41 +84,50 @@ def world_bounds(verts_all):
 
 
 def setup_world_and_ground(bmin, bmax):
-    # soft sky
+    # soft, bright studio backdrop
     world = bpy.data.worlds.new("W")
     world.use_nodes = True
     bg = world.node_tree.nodes.get("Background")
     if bg:
-        bg.inputs[0].default_value = (0.92, 0.93, 0.96, 1.0)
-        bg.inputs[1].default_value = 0.6
+        bg.inputs[0].default_value = (0.90, 0.91, 0.93, 1.0)
+        bg.inputs[1].default_value = 0.9
     bpy.context.scene.world = world
 
     cx = 0.5 * (bmin[0] + bmax[0])
     cy = 0.5 * (bmin[1] + bmax[1])
     floor_z = float(bmin[2])
-    bpy.ops.mesh.primitive_plane_add(size=40.0, location=(cx, cy, floor_z))
+    bpy.ops.mesh.primitive_plane_add(size=60.0, location=(cx, cy, floor_z))
     ground = bpy.context.active_object
     gmat = bpy.data.materials.new("Ground")
     gmat.use_nodes = True
     gbsdf = gmat.node_tree.nodes.get("Principled BSDF")
     if gbsdf:
-        gbsdf.inputs["Base Color"].default_value = (0.80, 0.80, 0.83, 1.0)
-        gbsdf.inputs["Roughness"].default_value = 0.9
+        gbsdf.inputs["Base Color"].default_value = (0.90, 0.90, 0.92, 1.0)
+        gbsdf.inputs["Roughness"].default_value = 0.75
+        if "Specular IOR Level" in gbsdf.inputs:
+            gbsdf.inputs["Specular IOR Level"].default_value = 0.2
     ground.data.materials.append(gmat)
     return cx, cy, floor_z
 
 
 def setup_lights(cx, cy, top_z):
+    # Soft studio setup: key sun + two fills for even, EDGE-like lighting.
     sun = bpy.data.objects.new("Sun", bpy.data.lights.new("Sun", "SUN"))
-    sun.data.energy = 4.0
-    sun.data.angle = math.radians(3.0)  # soft shadows
-    sun.rotation_euler = (math.radians(50.0), math.radians(15.0), math.radians(40.0))
+    sun.data.energy = 3.0
+    sun.data.angle = math.radians(6.0)  # soft shadows
+    sun.rotation_euler = (math.radians(48.0), math.radians(12.0), math.radians(35.0))
     bpy.context.collection.objects.link(sun)
 
+    key = bpy.data.objects.new("Key", bpy.data.lights.new("Key", "AREA"))
+    key.data.energy = 600.0
+    key.data.size = 8.0
+    key.location = (cx + 4.0, cy - 5.0, top_z + 3.0)
+    bpy.context.collection.objects.link(key)
+
     fill = bpy.data.objects.new("Fill", bpy.data.lights.new("Fill", "AREA"))
-    fill.data.energy = 300.0
-    fill.data.size = 6.0
-    fill.location = (cx - 4.0, cy - 4.0, top_z + 2.0)
+    fill.data.energy = 250.0
+    fill.data.size = 10.0
+    fill.location = (cx - 5.0, cy - 3.0, top_z + 1.5)
     bpy.context.collection.objects.link(fill)
 def _smooth(xy: np.ndarray, k: int = 11) -> np.ndarray:
     """Moving-average smooth an (L, 2) path so the follow camera glides, not jitters."""

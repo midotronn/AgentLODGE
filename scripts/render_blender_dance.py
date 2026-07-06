@@ -55,16 +55,41 @@ def compute_smplx_meshes(
         use_pca=False, flat_hand_mean=True, batch_size=1,
     )
     length = poses.shape[0]
+    zeros3 = torch.zeros(1, 3)
+    zeros45 = torch.zeros(1, 45)
+    zeros10 = torch.zeros(1, 10)
     verts = np.empty((length, model.get_num_verts(), 3), dtype=np.float32)
     with torch.no_grad():
         for i in range(length):
+            # Match LODGE's exact SMPL-X call: explicit flat hands / neutral face / zero
+            # shape so nothing falls back to a non-flat default that would bend the limbs.
             out = model(
+                betas=zeros10,
                 global_orient=torch.from_numpy(poses[i, 0:1]).float().reshape(1, 3),
                 body_pose=torch.from_numpy(poses[i, 1:22]).float().reshape(1, 63),
                 transl=torch.from_numpy(trans[i]).float().reshape(1, 3),
+                jaw_pose=zeros3, leye_pose=zeros3, reye_pose=zeros3,
+                left_hand_pose=zeros45, right_hand_pose=zeros45,
+                expression=zeros10,
             )
             verts[i] = out.vertices[0].numpy()
     return verts, model.faces.astype(np.int32)
+
+
+def _ground_verts(verts: np.ndarray, fps: int = 30) -> np.ndarray:
+    """Rest the dancer on the floor: subtract a lightly smoothed per-frame lowest-vertex
+    height so the planted foot sits at z=0 (instead of the whole clip floating above a
+    single global-minimum floor). Light smoothing keeps brief hops without popping.
+    """
+    foot_min = verts[:, :, 2].min(axis=1)  # (L,)
+    if foot_min.shape[0] >= 3:
+        k = min(5, foot_min.shape[0] | 1)
+        pad = k // 2
+        padded = np.pad(foot_min, (pad, pad), mode="edge")
+        foot_min = np.convolve(padded, np.ones(k) / k, mode="valid")[: verts.shape[0]]
+    out = verts.copy()
+    out[:, :, 2] -= foot_min[:, None]
+    return out
 
 
 def _orient_verts_zup(verts: np.ndarray) -> np.ndarray:
@@ -107,6 +132,7 @@ def render_blender_dance(
     logger.info("Computing SMPL-X meshes for %d frames...", motion.shape[0])
     verts, faces = compute_smplx_meshes(motion, smplx_model_dir, lodge_code_path)
     verts = _orient_verts_zup(verts)
+    verts = _ground_verts(verts)
 
     uv = None
     if uv_npz is not None and Path(uv_npz).exists():
