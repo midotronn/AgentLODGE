@@ -115,7 +115,29 @@ def compute_smpl_poses(
     length = ax.shape[0]
     poses = np.zeros((length, 24, 3), dtype=np.float32)
     poses[:, :22] = ax
+    fk_joints = _orient_joints_zup(fk_joints)
     return poses, trans, fk_joints
+
+
+def _orient_joints_zup(joints: np.ndarray) -> np.ndarray:
+    """Reorient FK joints (L, 22, 3) so the human's vertical axis maps to +Z, using a proper
+    (det=+1) rotation. The FK output frame is data-dependent (LODGE/FineDance is Y-up,
+    EDGE-derived motion is Z-up); the Y-Bot renderer Kabsch-aligns to these joints, so a Y-up
+    target would lay the robot on the floor. Normalising to Z-up here makes the robot stand
+    regardless of the source model.
+    """
+    if joints.size == 0:
+        return joints
+    ext = np.median(joints.max(axis=1) - joints.min(axis=1), axis=0)
+    up = int(np.argmax(ext))
+    if up == 1:  # Y-up -> Z-up via Rx(+90): (x, y, z) -> (x, -z, y)
+        joints = np.stack([joints[..., 0], -joints[..., 2], joints[..., 1]], axis=-1)
+    elif up == 0:  # X-up -> Z-up via Ry(+90): (x, y, z) -> (-z, y, x)
+        joints = np.stack([-joints[..., 2], joints[..., 1], joints[..., 0]], axis=-1)
+    # Ensure the head (SMPL joint 15) sits above the feet (7, 8) along +Z.
+    if joints[:, 15, 2].mean() < joints[:, [7, 8], 2].mean():
+        joints = np.stack([joints[..., 0], -joints[..., 1], -joints[..., 2]], axis=-1)
+    return joints.astype(np.float32)
 
 
 def _ground_verts(verts: np.ndarray, fps: int = 30) -> np.ndarray:
