@@ -117,13 +117,24 @@ def _yaw_z(rootq):
     return torch.atan2(R[..., 1, 0], R[..., 0, 0])
 
 
-def blend_onto(prev_tail139: np.ndarray, seg139: np.ndarray, blend_frames: int = 15) -> np.ndarray:
+def root_yaw(frame139: np.ndarray) -> float:
+    """Yaw (about +Z) of a single 139-dim frame's root orientation, in the Z-up frame."""
+    torch = _t()
+    q = _quat_from_6d(torch.from_numpy(frame139[_ROOT].reshape(1, 6).astype(np.float32)).float())
+    return float(_yaw_z(q[0]))
+
+
+def blend_onto(prev_tail139: np.ndarray, seg139: np.ndarray, blend_frames: int = 15,
+               canonical_yaw: float | None = None) -> np.ndarray:
     """Align ``seg139`` to the end of ``prev_tail139`` and inertialize the handoff.
 
-    Both inputs must already be in the same (Z-up) frame. ``prev_tail139`` only needs a few
-    trailing frames (the last frame's root pose is the transition target). Returns the aligned +
-    inertialized segment (same length as ``seg139``), ready to concatenate after the previous
-    motion for a seamless join.
+    Position is always chained (seg starts where prev ended) so there is no teleport. Facing is
+    aligned to ``canonical_yaw`` when given (so every segment faces the same canonical direction,
+    preventing cumulative rotation drift across many switches); otherwise it is aligned to the
+    previous segment's end facing. Either way the seam rotation is smoothed by inertialization.
+
+    Both inputs must already be in the same (Z-up) frame. Returns the aligned + inertialized
+    segment (same length as ``seg139``), ready to concatenate after the previous motion.
     """
     torch = _t()
     seg = torch.from_numpy(seg139.astype(np.float32)).clone()
@@ -138,8 +149,10 @@ def blend_onto(prev_tail139: np.ndarray, seg139: np.ndarray, blend_frames: int =
     prev_q = _quat_from_6d(prev_r6)                     # (22, 4)
     prev_tr = prev_end[_TRANS]
 
-    # 1. facing alignment: rotate segment about +Z so its root yaw at frame 0 matches prev end.
-    dyaw = _yaw_z(prev_q[0]) - _yaw_z(seg_q[0, 0])
+    # 1. facing alignment: rotate the segment about +Z. Target = a fixed canonical yaw (kills
+    #    cross-segment drift) when provided, else the previous segment's end facing.
+    target_yaw = torch.tensor(float(canonical_yaw)) if canonical_yaw is not None else _yaw_z(prev_q[0])
+    dyaw = target_yaw - _yaw_z(seg_q[0, 0])
     cz, sz = torch.cos(dyaw), torch.sin(dyaw)
     Rz = torch.stack([
         torch.stack([cz, -sz, torch.zeros_like(cz)]),

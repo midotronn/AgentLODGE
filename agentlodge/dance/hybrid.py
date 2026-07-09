@@ -186,6 +186,7 @@ def select_schedule(
     api_key: str | None = None,
     blend_frames: int = 15,
     expressiveness: float = DEFAULT_EXPRESSIVENESS,
+    canonical_facing: bool = True,
 ) -> tuple[list[tuple[int, int, str]], list[dict], str]:
     """Pick a generator per segment. Returns (schedule, per-segment score rows, reasoning)."""
     rows = []
@@ -217,6 +218,7 @@ def select_schedule(
             schedule, reasoning = _global_llm_schedule(
                 lodge, edge, bounds, rows, metadata, api_key, schedule,
                 blend_frames=blend_frames, expressiveness=expressiveness,
+                canonical_facing=canonical_facing,
             )
             logger.info("Using global LLM scheduler: %s", reasoning)
         except Exception as exc:  # pragma: no cover - network path
@@ -263,7 +265,8 @@ def _llm_schedule(rows, metadata, api_key, fallback):
 
 
 def _global_llm_schedule(lodge, edge, bounds, rows, metadata, api_key, seed, *,
-                         blend_frames=15, rounds=4, expressiveness=DEFAULT_EXPRESSIVENESS):
+                         blend_frames=15, rounds=4, expressiveness=DEFAULT_EXPRESSIVENESS,
+                         canonical_facing=True):
     """Globally-aware scheduler: the LLM proposes whole schedules, we ASSEMBLE + measure the real
     whole-dance cost, and feed that back so it optimises the true objective (with switch cost)
     over a few rounds. Returns the best-measured schedule.
@@ -272,7 +275,8 @@ def _global_llm_schedule(lodge, edge, bounds, rows, metadata, api_key, seed, *,
 
     def evaluate(picks):
         sched = _schedule_from_labels(bounds, picks)
-        motion = assemble(lodge, edge, sched, blend_frames=blend_frames)
+        motion = assemble(lodge, edge, sched, blend_frames=blend_frames,
+                          canonical_facing=canonical_facing)
         cost, bd = whole_dance_score(motion, metadata, expressiveness=expressiveness)
         return cost, bd, sched
 
@@ -354,19 +358,28 @@ def _merge_runs(schedule: list[tuple[int, int, str]]) -> list[tuple[int, int, st
     return runs
 
 
-def assemble(lodge: np.ndarray, edge: np.ndarray, schedule, blend_frames: int = 15) -> np.ndarray:
-    """Concatenate the scheduled runs, inertially blending at each generator switch."""
+def assemble(lodge: np.ndarray, edge: np.ndarray, schedule, blend_frames: int = 15,
+             canonical_facing: bool = True) -> np.ndarray:
+    """Concatenate the scheduled runs, inertially blending at each generator switch.
+
+    When ``canonical_facing`` is True, every run is anchored to the opening run's facing so the
+    dancer keeps a consistent orientation (no cumulative rotation drift across switches).
+    """
+    from agentlodge.dance.transition import root_yaw
+
     src = {"lodge": lodge, "edge": edge}
     runs = _merge_runs(schedule)
     committed: np.ndarray | None = None
+    canon: float | None = None
     for a, b, gen in runs:
         seg = src[gen][a:b].copy()
         if seg.shape[0] == 0:
             continue
         if committed is None:
             committed = seg
+            canon = root_yaw(seg[0]) if canonical_facing else None
         else:
-            blended = blend_onto(committed[-2:], seg, blend_frames)
+            blended = blend_onto(committed[-2:], seg, blend_frames, canonical_yaw=canon)
             committed = np.concatenate([committed, blended], axis=0)
     return committed if committed is not None else src["lodge"]
 
@@ -381,6 +394,7 @@ def build_hybrid(
     scheduler: str = "metric",
     api_key: str | None = None,
     expressiveness: float = DEFAULT_EXPRESSIVENESS,
+    canonical_facing: bool = True,
 ) -> HybridResult:
     """Assemble a hybrid dance from independently generated LODGE and EDGE motions."""
     lodge = to_zup(ensure_lodge139(lodge_motion))      # LODGE Y-up -> Z-up
@@ -394,8 +408,10 @@ def build_hybrid(
     schedule, rows, reasoning = select_schedule(
         lodge, edge, bounds, metadata, scheduler=scheduler, api_key=api_key,
         blend_frames=blend_frames, expressiveness=expressiveness,
+        canonical_facing=canonical_facing,
     )
-    motion = assemble(lodge, edge, schedule, blend_frames=blend_frames)
+    motion = assemble(lodge, edge, schedule, blend_frames=blend_frames,
+                      canonical_facing=canonical_facing)
     runs = _merge_runs(schedule)
     seg_desc = ", ".join(f"{a/FPS:.1f}-{b/FPS:.1f}s:{g}" for a, b, g in runs)
     logger.info("Hybrid schedule (%d runs): %s", len(runs), seg_desc)

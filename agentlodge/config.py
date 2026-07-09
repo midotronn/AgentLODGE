@@ -60,6 +60,7 @@ class Settings:
     hybrid_blend_frames: int = 15
     hybrid_scheduler: str = "llm_global"
     hybrid_expressiveness: float = 4.0
+    hybrid_canonical_facing: bool = True
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -102,6 +103,8 @@ class Settings:
             hybrid_blend_frames=int(os.getenv("AGENTLODGE_HYBRID_BLEND", "15")),
             hybrid_scheduler=os.getenv("AGENTLODGE_HYBRID_SCHEDULER", "llm_global").lower(),
             hybrid_expressiveness=float(os.getenv("AGENTLODGE_HYBRID_EXPRESSIVENESS", "4.0")),
+            hybrid_canonical_facing=os.getenv("AGENTLODGE_HYBRID_CANONICAL_FACING", "1").lower()
+            not in {"0", "false", "no"},
         )
 
     @classmethod
@@ -141,6 +144,7 @@ class Settings:
             hybrid_blend_frames=int(data.get("hybrid_blend_frames", 15)),
             hybrid_scheduler=data.get("hybrid_scheduler", "llm_global"),
             hybrid_expressiveness=float(data.get("hybrid_expressiveness", 4.0)),
+            hybrid_canonical_facing=bool(data.get("hybrid_canonical_facing", True)),
         )
 
     def validate_image_backend(self) -> None:
