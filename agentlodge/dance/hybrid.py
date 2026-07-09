@@ -177,19 +177,29 @@ def select_schedule(
     schedule = [(r["a"], r["b"], "lodge" if r["lodge_badness"] <= r["edge_badness"] else "edge")
                 for r in rows]
 
+    if scheduler in {"llm", "llm_global"} and not api_key:
+        logger.warning(
+            "Scheduler '%s' requested but no OpenAI API key is configured; "
+            "falling back to the metric scheduler.", scheduler
+        )
+
     if scheduler == "llm" and api_key:
         try:
             schedule, reasoning = _llm_schedule(rows, metadata, api_key, schedule)
+            logger.info("Using LLM scheduler: %s", reasoning)
         except Exception as exc:  # pragma: no cover - network path
-            logger.warning("LLM scheduler failed (%s); using metric schedule", exc)
+            logger.warning("LLM scheduler failed (%s); falling back to the metric schedule.", exc)
     elif scheduler == "llm_global" and api_key:
         try:
             schedule, reasoning = _global_llm_schedule(
                 lodge, edge, bounds, rows, metadata, api_key, schedule,
                 blend_frames=blend_frames,
             )
+            logger.info("Using global LLM scheduler: %s", reasoning)
         except Exception as exc:  # pragma: no cover - network path
-            logger.warning("Global LLM scheduler failed (%s); using metric schedule", exc)
+            logger.warning(
+                "Global LLM scheduler failed (%s); falling back to the metric schedule.", exc
+            )
     return schedule, rows, reasoning
 
 

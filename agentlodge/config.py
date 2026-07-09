@@ -58,7 +58,7 @@ class Settings:
     hybrid_enabled: bool = False
     hybrid_min_seg_seconds: float = 8.5
     hybrid_blend_frames: int = 15
-    hybrid_scheduler: str = "metric"
+    hybrid_scheduler: str = "llm_global"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -99,7 +99,7 @@ class Settings:
             in {"1", "true", "yes"},
             hybrid_min_seg_seconds=float(os.getenv("AGENTLODGE_HYBRID_MIN_SEG", "8.5")),
             hybrid_blend_frames=int(os.getenv("AGENTLODGE_HYBRID_BLEND", "15")),
-            hybrid_scheduler=os.getenv("AGENTLODGE_HYBRID_SCHEDULER", "metric").lower(),
+            hybrid_scheduler=os.getenv("AGENTLODGE_HYBRID_SCHEDULER", "llm_global").lower(),
         )
 
     @classmethod
@@ -137,7 +137,7 @@ class Settings:
             hybrid_enabled=bool(data.get("hybrid_enabled", False)),
             hybrid_min_seg_seconds=float(data.get("hybrid_min_seg_seconds", 8.5)),
             hybrid_blend_frames=int(data.get("hybrid_blend_frames", 15)),
-            hybrid_scheduler=data.get("hybrid_scheduler", "metric"),
+            hybrid_scheduler=data.get("hybrid_scheduler", "llm_global"),
         )
 
     def validate_image_backend(self) -> None:
