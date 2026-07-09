@@ -81,7 +81,7 @@ def _segment_metrics(motion: np.ndarray, a: int, b: int, metadata: SongMetadata)
     """Local coherence signals for motion[a:b]: smoothness, foot stability, beat sync."""
     seg = motion[a:b]
     if seg.shape[0] < 6:
-        return {"jerk": 0.0, "foot_skate": 0.0, "beat_sync": 0.0}
+        return {"jerk": 0.0, "foot_skate": 0.0, "beat_sync": 0.0, "energy": 0.0}
     kin = seg[:, :_KIN]
     jerk = float(np.mean(np.linalg.norm(np.diff(kin, n=3, axis=0), axis=1)))
     # foot skate proxy: horizontal root speed while any contact channel is active
@@ -101,18 +101,29 @@ def _segment_metrics(motion: np.ndarray, a: int, b: int, metadata: SongMetadata)
         beat_sync = aligned / len(dbeats)
     else:
         beat_sync = 0.0
-    return {"jerk": jerk, "foot_skate": foot_skate, "beat_sync": float(beat_sync)}
+    return {"jerk": jerk, "foot_skate": foot_skate, "beat_sync": float(beat_sync),
+            "energy": float(np.mean(energy))}
 
 
-def _badness(m: dict, jmax: float, fmax: float) -> float:
-    """Lower is better. Normalise jerk/foot by the per-segment max of both candidates."""
-    return m["jerk"] / (jmax + _EPS) + m["foot_skate"] / (fmax + _EPS) - m["beat_sync"]
+def _energy_mean(motion: np.ndarray) -> float:
+    """Mean per-frame kinematic energy (expressiveness / amount of movement)."""
+    if motion.shape[0] < 2:
+        return 0.0
+    rv = np.linalg.norm(np.diff(motion[:, :3], axis=0, prepend=motion[:1, :3]), axis=1)
+    jm = np.linalg.norm(np.diff(motion[:, :_KIN], axis=0, prepend=motion[:1, :_KIN]), axis=1)
+    return float(np.mean(0.6 * rv + 0.4 * jm))
 
 
-# Whole-dance objective (lower = better). Combines the coherence suite into one scalar so a
-# scheduler can optimise the ACTUAL assembled dance rather than per-segment proxies. Weights
-# scale the terms to comparable magnitude; seam_spikiness carries the (real) switch cost since
-# it rises with churn.
+def _badness(m: dict, expressiveness: float) -> float:
+    """Lower is better. Mirrors the whole-dance objective per segment: penalise unsmoothness /
+    foot sliding, reward beat sync + expressiveness (energy)."""
+    return m["jerk"] + m["foot_skate"] - m["beat_sync"] - expressiveness * m.get("energy", 0.0)
+
+
+# Whole-dance objective (lower = better). Combines smoothness/stability (penalised) with
+# musicality + expressiveness (rewarded), so the optimum is a dance that is both smooth AND
+# musical/energetic -- which a LODGE+EDGE mix can achieve better than either pure generator.
+# seam_spikiness carries the (real) switch cost since it rises with churn.
 _SCORE_WEIGHTS = {
     "smoothness_jerk": 1.0,
     "jitter_accel": 1.0,
@@ -122,10 +133,18 @@ _SCORE_WEIGHTS = {
     "bas_trend": -1.0,      # higher is better -> negative weight
     "beat_alignment": -0.5,  # higher is better -> negative weight
 }
+# Default expressiveness weight: reward per-frame energy (movement). ~4 balances EDGE's smoothness
+# against LODGE's energy so the coherence-optimal dance genuinely mixes both (see design plan).
+DEFAULT_EXPRESSIVENESS = 4.0
+_DIVERSITY_WEIGHT = 0.2
 
 
-def whole_dance_score(motion: np.ndarray, metadata: SongMetadata) -> tuple[float, dict]:
-    """Scalar whole-dance coherence cost (lower=better) + its breakdown, from the full suite."""
+def whole_dance_score(
+    motion: np.ndarray, metadata: SongMetadata, *,
+    expressiveness: float = DEFAULT_EXPRESSIVENESS,
+) -> tuple[float, dict]:
+    """Scalar whole-dance cost (lower=better) + breakdown: penalise unsmoothness/instability,
+    reward musicality (beat) + expressiveness (energy) + variety (diversity)."""
     from agentlodge.dance.metrics import compute_metrics
 
     dm = compute_metrics(motion, metadata, "hybrid", "")
@@ -139,7 +158,12 @@ def whole_dance_score(motion: np.ndarray, metadata: SongMetadata) -> tuple[float
         "bas_trend": c["bas_trend"],
         "beat_alignment": dm.beat_alignment_score,
     }
-    cost = sum(_SCORE_WEIGHTS[k] * bd[k] for k in _SCORE_WEIGHTS)
+    energy = _energy_mean(motion)
+    diversity = dm.motion_diversity
+    cost = (sum(_SCORE_WEIGHTS[k] * bd[k] for k in _SCORE_WEIGHTS)
+            - expressiveness * energy - _DIVERSITY_WEIGHT * diversity)
+    bd["expressiveness"] = energy
+    bd["diversity"] = diversity
     return float(cost), bd
 
 
@@ -161,15 +185,14 @@ def select_schedule(
     scheduler: str = "metric",
     api_key: str | None = None,
     blend_frames: int = 15,
+    expressiveness: float = DEFAULT_EXPRESSIVENESS,
 ) -> tuple[list[tuple[int, int, str]], list[dict], str]:
     """Pick a generator per segment. Returns (schedule, per-segment score rows, reasoning)."""
     rows = []
     for a, b in zip(bounds[:-1], bounds[1:]):
         lm = _segment_metrics(lodge, a, b, metadata)
         em = _segment_metrics(edge, a, b, metadata)
-        jmax = max(lm["jerk"], em["jerk"])
-        fmax = max(lm["foot_skate"], em["foot_skate"])
-        lb, eb = _badness(lm, jmax, fmax), _badness(em, jmax, fmax)
+        lb, eb = _badness(lm, expressiveness), _badness(em, expressiveness)
         rows.append({"a": a, "b": b, "lodge": lm, "edge": em,
                      "lodge_badness": lb, "edge_badness": eb})
 
@@ -193,7 +216,7 @@ def select_schedule(
         try:
             schedule, reasoning = _global_llm_schedule(
                 lodge, edge, bounds, rows, metadata, api_key, schedule,
-                blend_frames=blend_frames,
+                blend_frames=blend_frames, expressiveness=expressiveness,
             )
             logger.info("Using global LLM scheduler: %s", reasoning)
         except Exception as exc:  # pragma: no cover - network path
@@ -240,17 +263,17 @@ def _llm_schedule(rows, metadata, api_key, fallback):
 
 
 def _global_llm_schedule(lodge, edge, bounds, rows, metadata, api_key, seed, *,
-                         blend_frames=15, rounds=4):
+                         blend_frames=15, rounds=4, expressiveness=DEFAULT_EXPRESSIVENESS):
     """Globally-aware scheduler: the LLM proposes whole schedules, we ASSEMBLE + measure the real
-    whole-dance coherence cost, and feed that back so it optimises the true objective (with switch
-    cost) over a few rounds. Returns the best-measured schedule.
+    whole-dance cost, and feed that back so it optimises the true objective (with switch cost)
+    over a few rounds. Returns the best-measured schedule.
     """
     from openai import OpenAI
 
     def evaluate(picks):
         sched = _schedule_from_labels(bounds, picks)
         motion = assemble(lodge, edge, sched, blend_frames=blend_frames)
-        cost, bd = whole_dance_score(motion, metadata)
+        cost, bd = whole_dance_score(motion, metadata, expressiveness=expressiveness)
         return cost, bd, sched
 
     nseg = len(rows)
@@ -261,8 +284,8 @@ def _global_llm_schedule(lodge, edge, bounds, rows, metadata, api_key, seed, *,
 
     seg_lines = [
         f"seg{i} [{r['a']/FPS:.1f}-{r['b']/FPS:.1f}s]: "
-        f"LODGE(jerk={r['lodge']['jerk']:.3f},foot={r['lodge']['foot_skate']:.3f},beat={r['lodge']['beat_sync']:.2f}) "
-        f"EDGE(jerk={r['edge']['jerk']:.3f},foot={r['edge']['foot_skate']:.3f},beat={r['edge']['beat_sync']:.2f})"
+        f"LODGE(jerk={r['lodge']['jerk']:.3f},beat={r['lodge']['beat_sync']:.2f},energy={r['lodge']['energy']:.3f}) "
+        f"EDGE(jerk={r['edge']['jerk']:.3f},beat={r['edge']['beat_sync']:.2f},energy={r['edge']['energy']:.3f})"
         for i, r in enumerate(rows)
     ]
     client = OpenAI(api_key=api_key)
@@ -274,13 +297,16 @@ def _global_llm_schedule(lodge, edge, bounds, rows, metadata, api_key, seed, *,
             "You optimise a HYBRID dance assembled from a LODGE dance and an EDGE dance. For each "
             "segment you choose 'lodge' or 'edge'; chosen segments are concatenated and joined with "
             "automatic inertialized transitions. MINIMISE the measured whole-dance cost:\n"
-            "  cost = smoothness_jerk + jitter_accel + 0.05*seam_spikiness + 0.2*contact_flicker "
-            "+ 2*energy_stability - bas_trend - 0.5*beat_alignment   (LOWER is better).\n"
+            f"  cost = smoothness_jerk + jitter_accel + 0.05*seam_spikiness + 0.2*contact_flicker "
+            f"+ 2*energy_stability - bas_trend - 0.5*beat_alignment - {expressiveness:g}*expressiveness "
+            "- 0.2*diversity   (LOWER is better).\n"
+            "So a good dance is SMOOTH (low jerk) AND musical/expressive (high beat sync + energy + "
+            "variety). EDGE is usually smoother (low jerk); LODGE is usually more energetic and "
+            "on-beat -- so mixing can beat either alone.\n"
             "GLOBAL effects not visible per-segment: every generator SWITCH warps ~0.5s of the "
-            "incoming segment and raises seam_spikiness; frequent switching also hurts energy "
-            "stability and macro coherence. So prefer FEW, well-placed switches -- only switch when "
-            "a segment's gain outweighs the switch cost. EDGE is usually smoother (low jerk); LODGE "
-            "usually has better beat sync.\n\n"
+            "incoming segment and raises seam_spikiness; frequent switching also hurts macro "
+            "coherence. Prefer FEW, well-placed switches -- switch to LODGE for energetic/on-beat "
+            "sections, stay on EDGE for smoothness.\n\n"
             f"Song ~{metadata.duration_seconds:.0f}s ~{metadata.bpm:.0f}bpm, {nseg} segments:\n"
             + "\n".join(seg_lines)
             + f"\n\nBest so far: {_labels(best_sched)} -> cost {best_cost:.4f}; breakdown {best_bd}\n"
@@ -354,6 +380,7 @@ def build_hybrid(
     blend_frames: int = 15,
     scheduler: str = "metric",
     api_key: str | None = None,
+    expressiveness: float = DEFAULT_EXPRESSIVENESS,
 ) -> HybridResult:
     """Assemble a hybrid dance from independently generated LODGE and EDGE motions."""
     lodge = to_zup(ensure_lodge139(lodge_motion))      # LODGE Y-up -> Z-up
@@ -366,7 +393,7 @@ def build_hybrid(
     bounds = segment_boundaries(metadata, n, min_seg_seconds=min_seg_seconds)
     schedule, rows, reasoning = select_schedule(
         lodge, edge, bounds, metadata, scheduler=scheduler, api_key=api_key,
-        blend_frames=blend_frames,
+        blend_frames=blend_frames, expressiveness=expressiveness,
     )
     motion = assemble(lodge, edge, schedule, blend_frames=blend_frames)
     runs = _merge_runs(schedule)

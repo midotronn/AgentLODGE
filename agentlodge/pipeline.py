@@ -222,6 +222,7 @@ def _settings_to_dict(settings: Settings) -> dict:
         "hybrid_min_seg_seconds": settings.hybrid_min_seg_seconds,
         "hybrid_blend_frames": settings.hybrid_blend_frames,
         "hybrid_scheduler": settings.hybrid_scheduler,
+        "hybrid_expressiveness": settings.hybrid_expressiveness,
     }
 
 
@@ -354,6 +355,7 @@ def run_pipeline(
                 blend_frames=settings.hybrid_blend_frames,
                 scheduler=settings.hybrid_scheduler,
                 api_key=settings.openai_api_key,
+                expressiveness=settings.hybrid_expressiveness,
             )
             selected_model = "hybrid"
             selected_motion = hybrid.motion
