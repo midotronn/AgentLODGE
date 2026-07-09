@@ -18,6 +18,7 @@ from agentlodge.agent.selector import SelectionResult, select_dance
 from agentlodge.audio.preprocess import PreprocessedAudio, preprocess_audio, release_torch_memory
 from agentlodge.config import FPS, Settings
 from agentlodge.dance.format import ensure_lodge139
+from agentlodge.dance.hybrid import build_hybrid, _merge_runs
 from agentlodge.dance.metrics import DanceMetrics, compute_metrics
 from agentlodge.image.costume import generate_costume_image
 from agentlodge.subprocess_runner import (
@@ -217,6 +218,10 @@ def _settings_to_dict(settings: Settings) -> dict:
         "smplx_model_dir": str(settings.smplx_model_dir) if settings.smplx_model_dir else None,
         "smplx_uv_path": str(settings.smplx_uv_path) if settings.smplx_uv_path else None,
         "smplx_texture_path": str(settings.smplx_texture_path) if settings.smplx_texture_path else None,
+        "hybrid_enabled": settings.hybrid_enabled,
+        "hybrid_min_seg_seconds": settings.hybrid_min_seg_seconds,
+        "hybrid_blend_frames": settings.hybrid_blend_frames,
+        "hybrid_scheduler": settings.hybrid_scheduler,
     }
 
 
@@ -332,30 +337,62 @@ def run_pipeline(
     reasoning = ""
     selection_analysis = ""
     selection_scores: dict | None = None
-    if lodge_metrics and edge_metrics:
-        selection = select_dance(
-            lodge_metrics,
-            edge_metrics,
-            preprocessed.metadata,
-            settings.openai_api_key,
-        )
-        selected_model = selection.selected_model
-        reasoning = selection.reasoning
-        selection_analysis = selection.analysis
-        selection_scores = selection.scores
-        if selection.used_fallback:
-            errors.append(f"selection agent fallback: {reasoning}")
-    elif lodge_out.motion is None:
-        selected_model = "edge"
-        reasoning = "LODGE failed; automatically selected EDGE output."
-    elif edge_out.motion is None:
-        selected_model = "lodge"
-        reasoning = "EDGE failed; automatically selected LODGE output."
+    hybrid_schedule: list | None = None
+    selected_motion = None
 
-    selected_motion = lodge_out.motion if selected_model == "lodge" else edge_out.motion
+    if (
+        settings.hybrid_enabled
+        and lodge_out.motion is not None
+        and edge_out.motion is not None
+    ):
+        try:
+            hybrid = build_hybrid(
+                lodge_out.motion,
+                edge_out.motion,
+                preprocessed.metadata,
+                min_seg_seconds=settings.hybrid_min_seg_seconds,
+                blend_frames=settings.hybrid_blend_frames,
+                scheduler=settings.hybrid_scheduler,
+                api_key=settings.openai_api_key,
+            )
+            selected_model = "hybrid"
+            selected_motion = hybrid.motion
+            reasoning = hybrid.reasoning
+            hybrid_schedule = [
+                [int(a), int(b), g] for a, b, g in _merge_runs(hybrid.schedule)
+            ]
+            logger.info("Hybrid dance assembled (%d runs): %s",
+                        len(hybrid_schedule), hybrid_schedule)
+        except Exception as exc:
+            msg = f"Hybrid assembly failed: {exc}; falling back to single-model selection."
+            errors.append(msg)
+            logger.error(msg)
+
     if selected_motion is None:
-        selected_motion = edge_out.motion if lodge_out.motion is None else lodge_out.motion
-        selected_model = "edge" if lodge_out.motion is None else "lodge"
+        if lodge_metrics and edge_metrics:
+            selection = select_dance(
+                lodge_metrics,
+                edge_metrics,
+                preprocessed.metadata,
+                settings.openai_api_key,
+            )
+            selected_model = selection.selected_model
+            reasoning = selection.reasoning
+            selection_analysis = selection.analysis
+            selection_scores = selection.scores
+            if selection.used_fallback:
+                errors.append(f"selection agent fallback: {reasoning}")
+        elif lodge_out.motion is None:
+            selected_model = "edge"
+            reasoning = "LODGE failed; automatically selected EDGE output."
+        elif edge_out.motion is None:
+            selected_model = "lodge"
+            reasoning = "EDGE failed; automatically selected LODGE output."
+
+        selected_motion = lodge_out.motion if selected_model == "lodge" else edge_out.motion
+        if selected_motion is None:
+            selected_motion = edge_out.motion if lodge_out.motion is None else lodge_out.motion
+            selected_model = "edge" if lodge_out.motion is None else "lodge"
 
     selected_139 = ensure_lodge139(selected_motion)
     motion_path = out_dir / "selected_dance.npy"
@@ -473,6 +510,7 @@ def run_pipeline(
         "selection_reasoning": reasoning,
         "selection_analysis": selection_analysis,
         "selection_scores": selection_scores,
+        "hybrid_schedule": hybrid_schedule,
         "lodge_bas": lodge_metrics.beat_alignment_score if lodge_metrics else None,
         "edge_bas": edge_metrics.beat_alignment_score if edge_metrics else None,
         "lodge_diversity": lodge_metrics.motion_diversity if lodge_metrics else None,

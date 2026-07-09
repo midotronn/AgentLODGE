@@ -55,6 +55,10 @@ class Settings:
     smplx_texture_path: Path | None = None
     ybot_fbx_path: Path | None = None
     render_color: str = "0.5,0.5,0.52"
+    hybrid_enabled: bool = False
+    hybrid_min_seg_seconds: float = 8.5
+    hybrid_blend_frames: int = 15
+    hybrid_scheduler: str = "metric"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -91,6 +95,11 @@ class Settings:
             smplx_texture_path=_opt_path(os.getenv("SMPLX_TEXTURE_PATH")),
             ybot_fbx_path=_opt_path(os.getenv("YBOT_FBX_PATH")),
             render_color=os.getenv("AGENTLODGE_RENDER_COLOR", "0.5,0.5,0.52"),
+            hybrid_enabled=os.getenv("AGENTLODGE_HYBRID", "0").lower()
+            in {"1", "true", "yes"},
+            hybrid_min_seg_seconds=float(os.getenv("AGENTLODGE_HYBRID_MIN_SEG", "8.5")),
+            hybrid_blend_frames=int(os.getenv("AGENTLODGE_HYBRID_BLEND", "15")),
+            hybrid_scheduler=os.getenv("AGENTLODGE_HYBRID_SCHEDULER", "metric").lower(),
         )
 
     @classmethod
@@ -125,6 +134,10 @@ class Settings:
             smplx_texture_path=_opt_path(data.get("smplx_texture_path")),
             ybot_fbx_path=_opt_path(data.get("ybot_fbx_path")),
             render_color=data.get("render_color", "0.5,0.5,0.52"),
+            hybrid_enabled=bool(data.get("hybrid_enabled", False)),
+            hybrid_min_seg_seconds=float(data.get("hybrid_min_seg_seconds", 8.5)),
+            hybrid_blend_frames=int(data.get("hybrid_blend_frames", 15)),
+            hybrid_scheduler=data.get("hybrid_scheduler", "metric"),
         )
 
     def validate_image_backend(self) -> None:

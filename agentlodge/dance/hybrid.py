@@ -1,0 +1,238 @@
+"""Hybrid LODGE+EDGE dance assembly.
+
+Builds ONE dance whose time-segments are taken from an independently generated LODGE dance and
+EDGE dance, choosing per segment which generator best serves the whole piece, and joining the
+chosen runs with training-free inertialized transitions (see ``transition.py``).
+
+Pipeline:
+  1. Unify frames: convert LODGE (Y-up) to the Z-up EDGE frame; trim both to a common length.
+  2. Segment the timeline on musical downbeats (>= a minimum segment length).
+  3. Per segment, pick the generator with the better local coherence (metric scheduler; an
+     optional LLM scheduler can override). No switch penalty (per design).
+  4. Merge consecutive same-generator segments into runs and concatenate them, applying an
+     inertialized transition at every generator switch.
+
+Output is a Z-up 139-dim motion the existing Y-Bot renderer consumes directly.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import re
+from dataclasses import dataclass, field
+
+import numpy as np
+
+from agentlodge.audio.preprocess import SongMetadata
+from agentlodge.config import FPS
+from agentlodge.dance.format import ensure_lodge139
+from agentlodge.dance.transition import blend_onto, to_zup
+
+logger = logging.getLogger(__name__)
+
+_KIN = 135  # translation(3) + rotation(132); excludes the 4 contact labels
+_BEAT_TOL = 3
+_EPS = 1e-8
+
+
+@dataclass
+class HybridResult:
+    motion: np.ndarray                     # (L, 139) Z-up hybrid motion
+    schedule: list = field(default_factory=list)   # [(start, end, 'lodge'|'edge'), ...]
+    reasoning: str = ""
+    segment_scores: list = field(default_factory=list)
+
+
+# --------------------------------------------------------------------------- segmentation
+def segment_boundaries(
+    metadata: SongMetadata,
+    total_frames: int,
+    *,
+    min_seg_seconds: float = 8.5,
+    beats_per_bar: int = 4,
+) -> list[int]:
+    """Downbeat-aligned segment boundaries, each segment >= ``min_seg_seconds``.
+
+    Falls back to a uniform grid if beat information is unavailable.
+    """
+    min_frames = max(int(min_seg_seconds * FPS), 1)
+    beats = np.asarray(getattr(metadata, "beat_frames", []), dtype=np.int64)
+    beats = beats[(beats > 0) & (beats < total_frames)]
+    downbeats = beats[::beats_per_bar] if beats.size else np.array([], dtype=np.int64)
+
+    bounds = [0]
+    for db in downbeats:
+        if db - bounds[-1] >= min_frames and total_frames - db >= min_frames:
+            bounds.append(int(db))
+    if len(bounds) == 1:  # no usable downbeats -> uniform grid
+        step = max(min_frames, total_frames // 4 or total_frames)
+        bounds = list(range(0, total_frames, step)) or [0]
+        if total_frames - bounds[-1] < min_frames and len(bounds) > 1:
+            bounds.pop()
+    bounds.append(total_frames)
+    # dedupe/sort
+    return sorted(set(int(b) for b in bounds if 0 <= b <= total_frames))
+
+
+# --------------------------------------------------------------------------- scoring
+def _segment_metrics(motion: np.ndarray, a: int, b: int, metadata: SongMetadata) -> dict:
+    """Local coherence signals for motion[a:b]: smoothness, foot stability, beat sync."""
+    seg = motion[a:b]
+    if seg.shape[0] < 6:
+        return {"jerk": 0.0, "foot_skate": 0.0, "beat_sync": 0.0}
+    kin = seg[:, :_KIN]
+    jerk = float(np.mean(np.linalg.norm(np.diff(kin, n=3, axis=0), axis=1)))
+    # foot skate proxy: horizontal root speed while any contact channel is active
+    contact = seg[:, _KIN:139].mean(axis=1)[1:]
+    horiz = np.linalg.norm(np.diff(seg[:, [0, 1]], axis=0), axis=1)
+    foot_skate = float(np.mean(horiz * contact))
+    # beat sync within the window
+    root_vel = np.linalg.norm(np.diff(seg[:, :3], axis=0, prepend=seg[:1, :3]), axis=1)
+    joint_mv = np.linalg.norm(np.diff(kin, axis=0, prepend=kin[:1]), axis=1)
+    energy = 0.6 * root_vel + 0.4 * joint_mv
+    import librosa
+    dbeats = librosa.onset.onset_detect(onset_envelope=energy, sr=FPS, hop_length=1, units="frames")
+    mbeats = np.asarray(metadata.beat_frames, dtype=np.int64)
+    mbeats = mbeats[(mbeats >= a) & (mbeats < b)] - a
+    if len(dbeats) and len(mbeats):
+        aligned = sum(1 for d in dbeats if np.min(np.abs(mbeats - d)) <= _BEAT_TOL)
+        beat_sync = aligned / len(dbeats)
+    else:
+        beat_sync = 0.0
+    return {"jerk": jerk, "foot_skate": foot_skate, "beat_sync": float(beat_sync)}
+
+
+def _badness(m: dict, jmax: float, fmax: float) -> float:
+    """Lower is better. Normalise jerk/foot by the per-segment max of both candidates."""
+    return m["jerk"] / (jmax + _EPS) + m["foot_skate"] / (fmax + _EPS) - m["beat_sync"]
+
+
+# --------------------------------------------------------------------------- scheduling
+def select_schedule(
+    lodge: np.ndarray,
+    edge: np.ndarray,
+    bounds: list[int],
+    metadata: SongMetadata,
+    *,
+    scheduler: str = "metric",
+    api_key: str | None = None,
+) -> tuple[list[tuple[int, int, str]], list[dict], str]:
+    """Pick a generator per segment. Returns (schedule, per-segment score rows, reasoning)."""
+    rows = []
+    for a, b in zip(bounds[:-1], bounds[1:]):
+        lm = _segment_metrics(lodge, a, b, metadata)
+        em = _segment_metrics(edge, a, b, metadata)
+        jmax = max(lm["jerk"], em["jerk"])
+        fmax = max(lm["foot_skate"], em["foot_skate"])
+        lb, eb = _badness(lm, jmax, fmax), _badness(em, jmax, fmax)
+        rows.append({"a": a, "b": b, "lodge": lm, "edge": em,
+                     "lodge_badness": lb, "edge_badness": eb})
+
+    reasoning = "metric scheduler: per-segment pick of the lower-badness generator"
+    schedule = [(r["a"], r["b"], "lodge" if r["lodge_badness"] <= r["edge_badness"] else "edge")
+                for r in rows]
+
+    if scheduler == "llm" and api_key:
+        try:
+            schedule, reasoning = _llm_schedule(rows, metadata, api_key, schedule)
+        except Exception as exc:  # pragma: no cover - network path
+            logger.warning("LLM scheduler failed (%s); using metric schedule", exc)
+    return schedule, rows, reasoning
+
+
+def _llm_schedule(rows, metadata, api_key, fallback):
+    from openai import OpenAI
+
+    lines = []
+    for i, r in enumerate(rows):
+        lines.append(
+            f"seg {i} [{r['a']/FPS:.1f}-{r['b']/FPS:.1f}s]: "
+            f"LODGE(jerk={r['lodge']['jerk']:.3f},foot={r['lodge']['foot_skate']:.3f},beat={r['lodge']['beat_sync']:.2f}) "
+            f"EDGE(jerk={r['edge']['jerk']:.3f},foot={r['edge']['foot_skate']:.3f},beat={r['edge']['beat_sync']:.2f})"
+        )
+    prompt = (
+        "Assemble ONE hybrid dance by choosing, for each time-segment, whether LODGE or EDGE "
+        "drives it, to maximise the WHOLE dance's quality (smoothness=low jerk, stable feet=low "
+        "foot, strong musical sync=high beat). Switching is FREE (transitions are auto-blended); "
+        "choose whatever makes the overall piece best.\n\n"
+        f"Song ~{metadata.duration_seconds:.0f}s, ~{metadata.bpm:.0f} bpm. Segments:\n"
+        + "\n".join(lines)
+        + '\n\nRespond JSON only: {"schedule": ["lodge"|"edge", ...one per segment...], '
+        '"reasoning": "brief"}'
+    )
+    client = OpenAI(api_key=api_key)
+    model = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
+    resp = client.chat.completions.create(
+        model=model, max_tokens=600,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    text = resp.choices[0].message.content or ""
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    payload = json.loads(m.group(), strict=False)
+    picks = [str(p).lower().strip() for p in payload["schedule"]]
+    if len(picks) != len(rows) or any(p not in {"lodge", "edge"} for p in picks):
+        raise ValueError("LLM schedule length/labels invalid")
+    schedule = [(r["a"], r["b"], picks[i]) for i, r in enumerate(rows)]
+    return schedule, "llm scheduler: " + str(payload.get("reasoning", "")).strip()
+
+
+# --------------------------------------------------------------------------- assembly
+def _merge_runs(schedule: list[tuple[int, int, str]]) -> list[tuple[int, int, str]]:
+    """Merge consecutive same-generator segments into contiguous runs."""
+    runs: list[tuple[int, int, str]] = []
+    for a, b, gen in schedule:
+        if runs and runs[-1][2] == gen and runs[-1][1] == a:
+            pa, _, pg = runs[-1]
+            runs[-1] = (pa, b, pg)
+        else:
+            runs.append((a, b, gen))
+    return runs
+
+
+def assemble(lodge: np.ndarray, edge: np.ndarray, schedule, blend_frames: int = 15) -> np.ndarray:
+    """Concatenate the scheduled runs, inertially blending at each generator switch."""
+    src = {"lodge": lodge, "edge": edge}
+    runs = _merge_runs(schedule)
+    committed: np.ndarray | None = None
+    for a, b, gen in runs:
+        seg = src[gen][a:b].copy()
+        if seg.shape[0] == 0:
+            continue
+        if committed is None:
+            committed = seg
+        else:
+            blended = blend_onto(committed[-2:], seg, blend_frames)
+            committed = np.concatenate([committed, blended], axis=0)
+    return committed if committed is not None else src["lodge"]
+
+
+def build_hybrid(
+    lodge_motion: np.ndarray,
+    edge_motion: np.ndarray,
+    metadata: SongMetadata,
+    *,
+    min_seg_seconds: float = 8.5,
+    blend_frames: int = 15,
+    scheduler: str = "metric",
+    api_key: str | None = None,
+) -> HybridResult:
+    """Assemble a hybrid dance from independently generated LODGE and EDGE motions."""
+    lodge = to_zup(ensure_lodge139(lodge_motion))      # LODGE Y-up -> Z-up
+    edge = ensure_lodge139(edge_motion)                # EDGE already Z-up
+    n = min(lodge.shape[0], edge.shape[0])
+    if n < FPS:
+        raise ValueError(f"Motions too short to hybridize ({n} frames)")
+    lodge, edge = lodge[:n], edge[:n]
+
+    bounds = segment_boundaries(metadata, n, min_seg_seconds=min_seg_seconds)
+    schedule, rows, reasoning = select_schedule(
+        lodge, edge, bounds, metadata, scheduler=scheduler, api_key=api_key
+    )
+    motion = assemble(lodge, edge, schedule, blend_frames=blend_frames)
+    runs = _merge_runs(schedule)
+    seg_desc = ", ".join(f"{a/FPS:.1f}-{b/FPS:.1f}s:{g}" for a, b, g in runs)
+    logger.info("Hybrid schedule (%d runs): %s", len(runs), seg_desc)
+    return HybridResult(motion=motion, schedule=schedule, reasoning=reasoning,
+                        segment_scores=rows)
