@@ -109,6 +109,48 @@ def _badness(m: dict, jmax: float, fmax: float) -> float:
     return m["jerk"] / (jmax + _EPS) + m["foot_skate"] / (fmax + _EPS) - m["beat_sync"]
 
 
+# Whole-dance objective (lower = better). Combines the coherence suite into one scalar so a
+# scheduler can optimise the ACTUAL assembled dance rather than per-segment proxies. Weights
+# scale the terms to comparable magnitude; seam_spikiness carries the (real) switch cost since
+# it rises with churn.
+_SCORE_WEIGHTS = {
+    "smoothness_jerk": 1.0,
+    "jitter_accel": 1.0,
+    "seam_spikiness": 0.05,
+    "contact_flicker": 0.2,
+    "energy_stability": 2.0,
+    "bas_trend": -1.0,      # higher is better -> negative weight
+    "beat_alignment": -0.5,  # higher is better -> negative weight
+}
+
+
+def whole_dance_score(motion: np.ndarray, metadata: SongMetadata) -> tuple[float, dict]:
+    """Scalar whole-dance coherence cost (lower=better) + its breakdown, from the full suite."""
+    from agentlodge.dance.metrics import compute_metrics
+
+    dm = compute_metrics(motion, metadata, "hybrid", "")
+    c = dm.coherence.to_dict()
+    bd = {
+        "smoothness_jerk": c["smoothness_jerk"],
+        "jitter_accel": c["jitter_accel"],
+        "seam_spikiness": c["seam_spikiness"],
+        "contact_flicker": c["contact_flicker"],
+        "energy_stability": c["energy_stability"],
+        "bas_trend": c["bas_trend"],
+        "beat_alignment": dm.beat_alignment_score,
+    }
+    cost = sum(_SCORE_WEIGHTS[k] * bd[k] for k in _SCORE_WEIGHTS)
+    return float(cost), bd
+
+
+def _labels(schedule) -> list[str]:
+    return [g for _, _, g in schedule]
+
+
+def _schedule_from_labels(bounds: list[int], picks: list[str]) -> list[tuple[int, int, str]]:
+    return [(bounds[i], bounds[i + 1], picks[i]) for i in range(len(picks))]
+
+
 # --------------------------------------------------------------------------- scheduling
 def select_schedule(
     lodge: np.ndarray,
@@ -118,6 +160,7 @@ def select_schedule(
     *,
     scheduler: str = "metric",
     api_key: str | None = None,
+    blend_frames: int = 15,
 ) -> tuple[list[tuple[int, int, str]], list[dict], str]:
     """Pick a generator per segment. Returns (schedule, per-segment score rows, reasoning)."""
     rows = []
@@ -139,6 +182,14 @@ def select_schedule(
             schedule, reasoning = _llm_schedule(rows, metadata, api_key, schedule)
         except Exception as exc:  # pragma: no cover - network path
             logger.warning("LLM scheduler failed (%s); using metric schedule", exc)
+    elif scheduler == "llm_global" and api_key:
+        try:
+            schedule, reasoning = _global_llm_schedule(
+                lodge, edge, bounds, rows, metadata, api_key, schedule,
+                blend_frames=blend_frames,
+            )
+        except Exception as exc:  # pragma: no cover - network path
+            logger.warning("Global LLM scheduler failed (%s); using metric schedule", exc)
     return schedule, rows, reasoning
 
 
@@ -176,6 +227,82 @@ def _llm_schedule(rows, metadata, api_key, fallback):
         raise ValueError("LLM schedule length/labels invalid")
     schedule = [(r["a"], r["b"], picks[i]) for i, r in enumerate(rows)]
     return schedule, "llm scheduler: " + str(payload.get("reasoning", "")).strip()
+
+
+def _global_llm_schedule(lodge, edge, bounds, rows, metadata, api_key, seed, *,
+                         blend_frames=15, rounds=4):
+    """Globally-aware scheduler: the LLM proposes whole schedules, we ASSEMBLE + measure the real
+    whole-dance coherence cost, and feed that back so it optimises the true objective (with switch
+    cost) over a few rounds. Returns the best-measured schedule.
+    """
+    from openai import OpenAI
+
+    def evaluate(picks):
+        sched = _schedule_from_labels(bounds, picks)
+        motion = assemble(lodge, edge, sched, blend_frames=blend_frames)
+        cost, bd = whole_dance_score(motion, metadata)
+        return cost, bd, sched
+
+    nseg = len(rows)
+    seed_picks = _labels(seed)
+    best_cost, best_bd, best_sched = evaluate(seed_picks)
+    tried = {tuple(seed_picks): best_cost}
+    history = [(seed_picks, best_cost)]
+
+    seg_lines = [
+        f"seg{i} [{r['a']/FPS:.1f}-{r['b']/FPS:.1f}s]: "
+        f"LODGE(jerk={r['lodge']['jerk']:.3f},foot={r['lodge']['foot_skate']:.3f},beat={r['lodge']['beat_sync']:.2f}) "
+        f"EDGE(jerk={r['edge']['jerk']:.3f},foot={r['edge']['foot_skate']:.3f},beat={r['edge']['beat_sync']:.2f})"
+        for i, r in enumerate(rows)
+    ]
+    client = OpenAI(api_key=api_key)
+    model = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
+
+    for rnd in range(rounds):
+        hist_str = "\n".join(f"  {p} -> cost {c:.4f}" for p, c in history[-6:])
+        prompt = (
+            "You optimise a HYBRID dance assembled from a LODGE dance and an EDGE dance. For each "
+            "segment you choose 'lodge' or 'edge'; chosen segments are concatenated and joined with "
+            "automatic inertialized transitions. MINIMISE the measured whole-dance cost:\n"
+            "  cost = smoothness_jerk + jitter_accel + 0.05*seam_spikiness + 0.2*contact_flicker "
+            "+ 2*energy_stability - bas_trend - 0.5*beat_alignment   (LOWER is better).\n"
+            "GLOBAL effects not visible per-segment: every generator SWITCH warps ~0.5s of the "
+            "incoming segment and raises seam_spikiness; frequent switching also hurts energy "
+            "stability and macro coherence. So prefer FEW, well-placed switches -- only switch when "
+            "a segment's gain outweighs the switch cost. EDGE is usually smoother (low jerk); LODGE "
+            "usually has better beat sync.\n\n"
+            f"Song ~{metadata.duration_seconds:.0f}s ~{metadata.bpm:.0f}bpm, {nseg} segments:\n"
+            + "\n".join(seg_lines)
+            + f"\n\nBest so far: {_labels(best_sched)} -> cost {best_cost:.4f}; breakdown {best_bd}\n"
+            f"Measured attempts:\n{hist_str}\n\n"
+            f"Propose a NEW schedule (exactly {nseg} entries of 'lodge'/'edge') that LOWERS the "
+            'measured cost. JSON only: {"schedule": [...], "reasoning": "brief"}'
+        )
+        try:
+            resp = client.chat.completions.create(
+                model=model, max_tokens=500,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = resp.choices[0].message.content or ""
+            mm = re.search(r"\{.*\}", text, re.DOTALL)
+            payload = json.loads(mm.group(), strict=False)
+            picks = [str(p).lower().strip() for p in payload["schedule"]]
+            if len(picks) != nseg or any(p not in {"lodge", "edge"} for p in picks):
+                continue
+        except Exception as exc:  # pragma: no cover - network path
+            logger.warning("global-LLM round %d failed: %s", rnd, exc)
+            continue
+        if tuple(picks) in tried:
+            history.append((picks, tried[tuple(picks)]))
+            continue
+        cost, bd, sched = evaluate(picks)
+        tried[tuple(picks)] = cost
+        history.append((picks, cost))
+        if cost < best_cost:
+            best_cost, best_bd, best_sched = cost, bd, sched
+
+    return best_sched, (f"llm_global scheduler: best measured whole-dance cost {best_cost:.4f} "
+                        f"over {len(tried)} evaluated schedules")
 
 
 # --------------------------------------------------------------------------- assembly
@@ -228,7 +355,8 @@ def build_hybrid(
 
     bounds = segment_boundaries(metadata, n, min_seg_seconds=min_seg_seconds)
     schedule, rows, reasoning = select_schedule(
-        lodge, edge, bounds, metadata, scheduler=scheduler, api_key=api_key
+        lodge, edge, bounds, metadata, scheduler=scheduler, api_key=api_key,
+        blend_frames=blend_frames,
     )
     motion = assemble(lodge, edge, schedule, blend_frames=blend_frames)
     runs = _merge_runs(schedule)
