@@ -422,16 +422,20 @@ def _merge_runs(schedule: list[tuple[int, int, str]]) -> list[tuple[int, int, st
     return runs
 
 
-def _facing_yaw_fk(motion139: np.ndarray, lodge_code_path) -> float:
-    """Circular-mean facing yaw (radians, about +Z) of a rendered motion, from FK shoulders.
+def _facing_yaw_fk(motion139: np.ndarray, lodge_code_path, frames: int | None = None) -> float:
+    """Circular-mean facing yaw (radians, about +Z) of a rendered motion, from FK hips.
 
-    Uses the same FK path as the renderer so the measured facing matches what is displayed.
-    forward = up x right, right = L_shoulder(16) - R_shoulder(17) projected to the ground.
+    Uses the same FK path as the renderer so the measured facing matches what is displayed. The
+    hip line (L_hip(1) - R_hip(2)) is the stable indicator of body facing (shoulders/arms twist
+    too much in dance). forward = up x right. When ``frames`` is given, only that opening window
+    is used (so the dancer's START faces the reference), else the whole clip.
     """
     from scripts.render_blender_dance import compute_smpl_poses
 
     _, _, fk = compute_smpl_poses(motion139, lodge_code_path)[:3]
-    right = fk[:, 16, :] - fk[:, 17, :]
+    if frames is not None:
+        fk = fk[:frames]
+    right = fk[:, 1, :] - fk[:, 2, :]
     right[:, 2] = 0.0
     right /= (np.linalg.norm(right, axis=1, keepdims=True) + _EPS)
     fwd = np.cross(np.array([0.0, 0.0, 1.0]), right)
@@ -496,17 +500,19 @@ def build_hybrid(
     motion = assemble(lodge, edge, schedule, blend_frames=blend_frames,
                       canonical_facing=canonical_facing)
     # canonical_facing anchors the whole hybrid to the opening run's yaw, which (when the opener
-    # is a LODGE segment) can point away from the camera. Align the assembled hybrid's facing to
-    # the EDGE reference (which faces the camera) with a single global Z-rotation.
+    # is a LODGE segment) can point away from the camera. Align the assembled hybrid's OPENING
+    # facing to the EDGE reference's opening (EDGE faces the camera) with one global Z-rotation,
+    # so the dancer starts facing the viewer like EDGE/LODGE.
     if face_camera and lodge_code_path is not None:
         try:
             from agentlodge.dance.transition import rotate_root_yaw
 
-            yh = _facing_yaw_fk(motion, lodge_code_path)
-            ye = _facing_yaw_fk(edge, lodge_code_path)
+            win = min(20, motion.shape[0])
+            yh = _facing_yaw_fk(motion, lodge_code_path, frames=win)
+            ye = _facing_yaw_fk(edge, lodge_code_path, frames=win)
             delta = float(np.arctan2(np.sin(ye - yh), np.cos(ye - yh)))
             motion = rotate_root_yaw(motion, delta)
-            logger.info("Aligned hybrid facing to EDGE (rotated %.1f deg about Z)",
+            logger.info("Aligned hybrid opening facing to EDGE (rotated %.1f deg about Z)",
                         np.degrees(delta))
         except Exception as exc:  # pragma: no cover - FK/optional path
             logger.warning("Facing alignment skipped (%s)", exc)

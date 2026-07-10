@@ -128,14 +128,24 @@ def _orient_joints_zup(joints: np.ndarray) -> np.ndarray:
     """
     if joints.size == 0:
         return joints
-    ext = np.median(joints.max(axis=1) - joints.min(axis=1), axis=0)
-    up = int(np.argmax(ext))
-    if up == 1:  # Y-up -> Z-up via Rx(+90): (x, y, z) -> (x, -z, y)
-        joints = np.stack([joints[..., 0], -joints[..., 2], joints[..., 1]], axis=-1)
-    elif up == 0:  # X-up -> Z-up via Ry(+90): (x, y, z) -> (-z, y, x)
-        joints = np.stack([-joints[..., 2], joints[..., 1], joints[..., 0]], axis=-1)
-    # Ensure the head (SMPL joint 15) sits above the feet (7, 8) along +Z.
-    if joints[:, 15, 2].mean() < joints[:, [7, 8], 2].mean():
+    # Detect the body's vertical ANATOMICALLY (head-15 above feet-7,8), averaged over frames.
+    # This is robust to wide-arm / dynamic poses (unlike a bounding-box extent argmax, which can
+    # pick the arm-span axis) and is invariant under rotation about the vertical, so facing
+    # normalisation stays consistent.
+    hf = (joints[:, 15, :] - joints[:, [7, 8], :].mean(axis=1)).mean(axis=0)
+    up = int(np.argmax(np.abs(hf)))
+    positive = hf[up] >= 0
+    if up == 1:  # Y vertical -> Z. +Y via Rx(+90):(x,y,z)->(x,-z,y); -Y via Rx(-90):(x,y,z)->(x,z,-y)
+        if positive:
+            joints = np.stack([joints[..., 0], -joints[..., 2], joints[..., 1]], axis=-1)
+        else:
+            joints = np.stack([joints[..., 0], joints[..., 2], -joints[..., 1]], axis=-1)
+    elif up == 0:  # X vertical -> Z. +X via Ry(+90):(x,y,z)->(-z,y,x); -X via Ry(-90):(x,y,z)->(z,y,-x)
+        if positive:
+            joints = np.stack([-joints[..., 2], joints[..., 1], joints[..., 0]], axis=-1)
+        else:
+            joints = np.stack([joints[..., 2], joints[..., 1], -joints[..., 0]], axis=-1)
+    elif not positive:  # already Z vertical but pointing -Z -> flip via Rx(180):(x,y,z)->(x,-y,-z)
         joints = np.stack([joints[..., 0], -joints[..., 1], -joints[..., 2]], axis=-1)
     return joints.astype(np.float32)
 
