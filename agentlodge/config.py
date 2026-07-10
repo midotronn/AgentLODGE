@@ -58,7 +58,7 @@ class Settings:
     hybrid_enabled: bool = False
     hybrid_min_seg_seconds: float = 8.5
     hybrid_blend_frames: int = 15
-    hybrid_scheduler: str = "llm_global"
+    hybrid_scheduler: str = "greedy_global"
     hybrid_expressiveness: float = 4.0
     hybrid_canonical_facing: bool = True
 
@@ -101,7 +101,7 @@ class Settings:
             in {"1", "true", "yes"},
             hybrid_min_seg_seconds=float(os.getenv("AGENTLODGE_HYBRID_MIN_SEG", "8.5")),
             hybrid_blend_frames=int(os.getenv("AGENTLODGE_HYBRID_BLEND", "15")),
-            hybrid_scheduler=os.getenv("AGENTLODGE_HYBRID_SCHEDULER", "llm_global").lower(),
+            hybrid_scheduler=os.getenv("AGENTLODGE_HYBRID_SCHEDULER", "greedy_global").lower(),
             hybrid_expressiveness=float(os.getenv("AGENTLODGE_HYBRID_EXPRESSIVENESS", "4.0")),
             hybrid_canonical_facing=os.getenv("AGENTLODGE_HYBRID_CANONICAL_FACING", "1").lower()
             not in {"0", "false", "no"},
@@ -142,7 +142,7 @@ class Settings:
             hybrid_enabled=bool(data.get("hybrid_enabled", False)),
             hybrid_min_seg_seconds=float(data.get("hybrid_min_seg_seconds", 8.5)),
             hybrid_blend_frames=int(data.get("hybrid_blend_frames", 15)),
-            hybrid_scheduler=data.get("hybrid_scheduler", "llm_global"),
+            hybrid_scheduler=data.get("hybrid_scheduler", "greedy_global"),
             hybrid_expressiveness=float(data.get("hybrid_expressiveness", 4.0)),
             hybrid_canonical_facing=bool(data.get("hybrid_canonical_facing", True)),
         )

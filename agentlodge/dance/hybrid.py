@@ -225,7 +225,71 @@ def select_schedule(
             logger.warning(
                 "Global LLM scheduler failed (%s); falling back to the metric schedule.", exc
             )
+    elif scheduler == "greedy_global":
+        try:
+            schedule, reasoning = _greedy_global_schedule(
+                lodge, edge, bounds, metadata, seed=schedule,
+                blend_frames=blend_frames, expressiveness=expressiveness,
+                canonical_facing=canonical_facing,
+            )
+            logger.info("Using greedy-global scheduler: %s", reasoning)
+        except Exception as exc:
+            logger.warning(
+                "Greedy-global scheduler failed (%s); falling back to the metric schedule.", exc
+            )
     return schedule, rows, reasoning
+
+
+def _greedy_global_schedule(
+    lodge, edge, bounds, metadata, *, seed=None, blend_frames=15,
+    expressiveness=DEFAULT_EXPRESSIVENESS, canonical_facing=True,
+):
+    """Deterministic optimal-ish scheduler: coordinate descent on the REAL whole-dance objective.
+
+    Assembles + scores the actual hybrid for each candidate, flipping one segment at a time until
+    no single flip improves. Seeded from all-EDGE, all-LODGE and the metric-greedy schedule, so the
+    result is guaranteed no worse than either pure parent and strictly beats both when genuine
+    per-segment complementarity exists. Unlike the LLM scheduler this needs no network and is
+    reproducible.
+    """
+    nseg = len(bounds) - 1
+    cache: dict = {}
+
+    def cost(labels):
+        key = tuple(labels)
+        if key not in cache:
+            sched = _schedule_from_labels(bounds, list(labels))
+            H = assemble(lodge, edge, sched, blend_frames=blend_frames,
+                         canonical_facing=canonical_facing)
+            cache[key] = whole_dance_score(H, metadata, expressiveness=expressiveness)[0]
+        return cache[key]
+
+    def descend(labels):
+        labels = list(labels)
+        cur = cost(labels)
+        improved = True
+        while improved:
+            improved = False
+            for i in range(nseg):
+                trial = labels[:]
+                trial[i] = "edge" if labels[i] == "lodge" else "lodge"
+                c = cost(trial)
+                if c < cur - 1e-9:
+                    labels, cur, improved = trial, c, True
+        return labels, cur
+
+    seeds = [["edge"] * nseg, ["lodge"] * nseg]
+    if seed:
+        seeds.append([g for _, _, g in seed])
+    best_labels, best_cost = None, float("inf")
+    for s in seeds:
+        lab, c = descend(s)
+        if c < best_cost:
+            best_labels, best_cost = lab, c
+    n_lodge = best_labels.count("lodge")
+    return (_schedule_from_labels(bounds, best_labels),
+            f"greedy_global: coordinate descent (cost={best_cost:.3f}, "
+            f"{n_lodge}/{nseg} LODGE segments)")
 
 
 def _llm_schedule(rows, metadata, api_key, fallback):
