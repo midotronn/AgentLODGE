@@ -444,11 +444,14 @@ def _facing_yaw_fk(motion139: np.ndarray, lodge_code_path, frames: int | None = 
 
 
 def assemble(lodge: np.ndarray, edge: np.ndarray, schedule, blend_frames: int = 15,
-             canonical_facing: bool = True) -> np.ndarray:
+             canonical_facing: bool = True, natural_facing: bool = True) -> np.ndarray:
     """Concatenate the scheduled runs, inertially blending at each generator switch.
 
-    When ``canonical_facing`` is True, every run is anchored to the opening run's facing so the
-    dancer keeps a consistent orientation (no cumulative rotation drift across switches).
+    ``natural_facing`` (default) keeps each run's OWN facing and only chains position + smooths the
+    seam via inertialization. Both LODGE and EDGE already face the camera throughout, so this keeps
+    the hybrid facing the camera like the sources. (The legacy ``canonical_facing`` path anchors
+    every run's first frame to the opening run's yaw; because runs are cut from different times with
+    different facings, that rotated whole segments off-camera, so it is no longer the default.)
     """
     from agentlodge.dance.transition import root_yaw
 
@@ -462,9 +465,10 @@ def assemble(lodge: np.ndarray, edge: np.ndarray, schedule, blend_frames: int = 
             continue
         if committed is None:
             committed = seg
-            canon = root_yaw(seg[0]) if canonical_facing else None
+            canon = root_yaw(seg[0]) if (canonical_facing and not natural_facing) else None
         else:
-            blended = blend_onto(committed[-2:], seg, blend_frames, canonical_yaw=canon)
+            blended = blend_onto(committed[-2:], seg, blend_frames,
+                                 canonical_yaw=canon, align_facing=not natural_facing)
             committed = np.concatenate([committed, blended], axis=0)
     return committed if committed is not None else src["lodge"]
 

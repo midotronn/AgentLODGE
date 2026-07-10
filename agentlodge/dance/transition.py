@@ -153,13 +153,15 @@ def root_yaw(frame139: np.ndarray) -> float:
 
 
 def blend_onto(prev_tail139: np.ndarray, seg139: np.ndarray, blend_frames: int = 15,
-               canonical_yaw: float | None = None) -> np.ndarray:
+               canonical_yaw: float | None = None, align_facing: bool = True) -> np.ndarray:
     """Align ``seg139`` to the end of ``prev_tail139`` and inertialize the handoff.
 
-    Position is always chained (seg starts where prev ended) so there is no teleport. Facing is
-    aligned to ``canonical_yaw`` when given (so every segment faces the same canonical direction,
-    preventing cumulative rotation drift across many switches); otherwise it is aligned to the
-    previous segment's end facing. Either way the seam rotation is smoothed by inertialization.
+    Position is always chained (seg starts where prev ended) so there is no teleport. When
+    ``align_facing`` is True, the segment is rotated about +Z to ``canonical_yaw`` (kills
+    cross-segment drift) or the previous segment's end facing. When False, the segment KEEPS its
+    own natural facing (only position is chained) -- use this when both generators already face a
+    consistent direction (e.g. the camera), so re-anchoring would rotate a whole segment away; the
+    small seam orientation difference is still smoothed by the inertialized root blend below.
 
     Both inputs must already be in the same (Z-up) frame. Returns the aligned + inertialized
     segment (same length as ``seg139``), ready to concatenate after the previous motion.
@@ -178,16 +180,21 @@ def blend_onto(prev_tail139: np.ndarray, seg139: np.ndarray, blend_frames: int =
     prev_tr = prev_end[_TRANS]
 
     # 1. facing alignment: rotate the segment about +Z. Target = a fixed canonical yaw (kills
-    #    cross-segment drift) when provided, else the previous segment's end facing.
-    target_yaw = torch.tensor(float(canonical_yaw)) if canonical_yaw is not None else _yaw_z(prev_q[0])
-    dyaw = target_yaw - _yaw_z(seg_q[0, 0])
+    #    cross-segment drift) when provided, else the previous segment's end facing. When
+    #    align_facing is False, keep the segment's own facing (dyaw = 0) and only chain position.
+    _, _, mat_to_quat, quat_to_mat = _pt3d()
+    if align_facing:
+        target_yaw = (torch.tensor(float(canonical_yaw)) if canonical_yaw is not None
+                      else _yaw_z(prev_q[0]))
+        dyaw = target_yaw - _yaw_z(seg_q[0, 0])
+    else:
+        dyaw = torch.tensor(0.0)
     cz, sz = torch.cos(dyaw), torch.sin(dyaw)
     Rz = torch.stack([
         torch.stack([cz, -sz, torch.zeros_like(cz)]),
         torch.stack([sz, cz, torch.zeros_like(cz)]),
         torch.stack([torch.zeros_like(cz), torch.zeros_like(cz), torch.ones_like(cz)]),
     ])
-    _, _, mat_to_quat, quat_to_mat = _pt3d()
     segR0 = quat_to_mat(seg_q[:, 0])
     seg_q[:, 0] = mat_to_quat(torch.einsum("ij,sjk->sik", Rz, segR0))
     seg_tr = torch.einsum("ij,sj->si", Rz, seg_tr - seg_tr[0]) + prev_tr
