@@ -51,6 +51,10 @@ def _pt3d():
 def to_zup(motion139: np.ndarray) -> np.ndarray:
     """Convert a Y-up (LODGE/FineDance) 139 motion to the Z-up (EDGE) frame.
 
+    Input MUST be in AgentLODGE layout ``[trans(3) | rot(132) | contact(4)]`` (contact last);
+    pass LODGE-native ``[contact | trans | rot]`` arrays through ``to_agentlodge139`` first or the
+    root orientation will be corrupted (contact channels get swizzled as translation).
+
     Translation is swizzled (x, y, z) -> (x, -z, y); the root joint's global orientation is
     pre-multiplied by Rx(+90). Local joint rotations (frame-independent) are unchanged.
     """

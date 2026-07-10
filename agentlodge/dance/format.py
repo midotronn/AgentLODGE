@@ -27,6 +27,27 @@ def _looks_like_contact(values: np.ndarray) -> bool:
     return float(np.mean((values >= -0.01) & (values <= 1.01))) > 0.9
 
 
+def to_agentlodge139(motion: np.ndarray) -> np.ndarray:
+    """Normalize a 139-dim motion to AgentLODGE layout ``[trans(3) | rot(132) | contact(4)]``.
+
+    LODGE/FineDance emits the native layout ``[contact(4) | trans(3) | rot(132)]`` (contact
+    first). The hybrid/transition code (``to_zup``, ``assemble``) assumes the AgentLODGE
+    layout (contact last), so callers must normalize contact-first motions before using them.
+    Detects a contact-first array and reorders it; already-AgentLODGE arrays pass through.
+    """
+    if motion.shape[-1] != 139:
+        raise ValueError(f"Expected motion with 139 dims, got {motion.shape[-1]}")
+    motion = motion.astype(np.float32)
+    start_contact = _looks_like_contact(motion[:, :4])
+    end_contact = _looks_like_contact(motion[:, 135:139])
+    if start_contact and not end_contact:
+        # native [contact(4) | trans(3) | rot(132)] -> [trans(3) | rot(132) | contact(4)]
+        return np.concatenate(
+            [motion[:, 4:7], motion[:, 7:139], motion[:, 0:4]], axis=1
+        ).astype(np.float32)
+    return motion
+
+
 def to_native_finedance139(motion: np.ndarray) -> np.ndarray:
     """Convert AgentLODGE layout to native FineDance 139-dim layout for FK/rendering.
 

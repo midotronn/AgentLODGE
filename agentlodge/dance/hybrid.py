@@ -27,7 +27,7 @@ import numpy as np
 
 from agentlodge.audio.preprocess import SongMetadata
 from agentlodge.config import FPS
-from agentlodge.dance.format import ensure_lodge139
+from agentlodge.dance.format import ensure_lodge139, to_agentlodge139
 from agentlodge.dance.transition import blend_onto, to_zup
 
 logger = logging.getLogger(__name__)
@@ -397,8 +397,8 @@ def build_hybrid(
     canonical_facing: bool = True,
 ) -> HybridResult:
     """Assemble a hybrid dance from independently generated LODGE and EDGE motions."""
-    lodge = to_zup(ensure_lodge139(lodge_motion))      # LODGE Y-up -> Z-up
-    edge = ensure_lodge139(edge_motion)                # EDGE already Z-up
+    lodge = to_zup(to_agentlodge139(ensure_lodge139(lodge_motion)))  # native->AgentLODGE, Y-up->Z-up
+    edge = to_agentlodge139(ensure_lodge139(edge_motion))            # EDGE already Z-up
     n = min(lodge.shape[0], edge.shape[0])
     if n < FPS:
         raise ValueError(f"Motions too short to hybridize ({n} frames)")
