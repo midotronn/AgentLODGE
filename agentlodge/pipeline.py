@@ -358,6 +358,7 @@ def run_pipeline(
                 api_key=settings.openai_api_key,
                 expressiveness=settings.hybrid_expressiveness,
                 canonical_facing=settings.hybrid_canonical_facing,
+                lodge_code_path=settings.lodge_code_path,
             )
             selected_model = "hybrid"
             selected_motion = hybrid.motion

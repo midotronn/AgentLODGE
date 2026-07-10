@@ -422,6 +422,23 @@ def _merge_runs(schedule: list[tuple[int, int, str]]) -> list[tuple[int, int, st
     return runs
 
 
+def _facing_yaw_fk(motion139: np.ndarray, lodge_code_path) -> float:
+    """Circular-mean facing yaw (radians, about +Z) of a rendered motion, from FK shoulders.
+
+    Uses the same FK path as the renderer so the measured facing matches what is displayed.
+    forward = up x right, right = L_shoulder(16) - R_shoulder(17) projected to the ground.
+    """
+    from scripts.render_blender_dance import compute_smpl_poses
+
+    _, _, fk = compute_smpl_poses(motion139, lodge_code_path)[:3]
+    right = fk[:, 16, :] - fk[:, 17, :]
+    right[:, 2] = 0.0
+    right /= (np.linalg.norm(right, axis=1, keepdims=True) + _EPS)
+    fwd = np.cross(np.array([0.0, 0.0, 1.0]), right)
+    yaw = np.arctan2(fwd[:, 1], fwd[:, 0])
+    return float(np.arctan2(np.sin(yaw).mean(), np.cos(yaw).mean()))
+
+
 def assemble(lodge: np.ndarray, edge: np.ndarray, schedule, blend_frames: int = 15,
              canonical_facing: bool = True) -> np.ndarray:
     """Concatenate the scheduled runs, inertially blending at each generator switch.
@@ -459,6 +476,8 @@ def build_hybrid(
     api_key: str | None = None,
     expressiveness: float = DEFAULT_EXPRESSIVENESS,
     canonical_facing: bool = True,
+    lodge_code_path=None,
+    face_camera: bool = True,
 ) -> HybridResult:
     """Assemble a hybrid dance from independently generated LODGE and EDGE motions."""
     lodge = to_zup(to_agentlodge139(ensure_lodge139(lodge_motion)))  # native->AgentLODGE, Y-up->Z-up
@@ -476,6 +495,21 @@ def build_hybrid(
     )
     motion = assemble(lodge, edge, schedule, blend_frames=blend_frames,
                       canonical_facing=canonical_facing)
+    # canonical_facing anchors the whole hybrid to the opening run's yaw, which (when the opener
+    # is a LODGE segment) can point away from the camera. Align the assembled hybrid's facing to
+    # the EDGE reference (which faces the camera) with a single global Z-rotation.
+    if face_camera and lodge_code_path is not None:
+        try:
+            from agentlodge.dance.transition import rotate_root_yaw
+
+            yh = _facing_yaw_fk(motion, lodge_code_path)
+            ye = _facing_yaw_fk(edge, lodge_code_path)
+            delta = float(np.arctan2(np.sin(ye - yh), np.cos(ye - yh)))
+            motion = rotate_root_yaw(motion, delta)
+            logger.info("Aligned hybrid facing to EDGE (rotated %.1f deg about Z)",
+                        np.degrees(delta))
+        except Exception as exc:  # pragma: no cover - FK/optional path
+            logger.warning("Facing alignment skipped (%s)", exc)
     runs = _merge_runs(schedule)
     seg_desc = ", ".join(f"{a/FPS:.1f}-{b/FPS:.1f}s:{g}" for a, b, g in runs)
     logger.info("Hybrid schedule (%d runs): %s", len(runs), seg_desc)

@@ -70,7 +70,26 @@ def to_zup(motion139: np.ndarray) -> np.ndarray:
     return m
 
 
-# --- quaternion helpers (operate on torch tensors) ---
+def rotate_root_yaw(motion139: np.ndarray, delta_rad: float) -> np.ndarray:
+    """Rotate a whole 139-dim motion about +Z by ``delta_rad`` (global facing/yaw change).
+
+    Applies Rz(delta) to the root joint's global orientation and to the root translation so the
+    dancer faces a new direction without otherwise altering the choreography. Used to align the
+    assembled hybrid's facing to a reference (e.g. EDGE, which faces the camera).
+    """
+    if abs(delta_rad) < 1e-9:
+        return motion139
+    torch = _t()
+    rot6d_to_mat, mat_to_6d, *_ = _pt3d()
+    m = motion139.astype(np.float32).copy()
+    s = m.shape[0]
+    c, sn = np.cos(delta_rad), np.sin(delta_rad)
+    Rz = np.array([[c, -sn, 0.0], [sn, c, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32)
+    m[:, _TRANS] = m[:, _TRANS] @ Rz.T
+    R = rot6d_to_mat(torch.from_numpy(m[:, _ROT].reshape(s, NUM_JOINTS, 6).copy()).float())
+    R[:, 0] = torch.einsum("ij,sjk->sik", torch.from_numpy(Rz), R[:, 0])
+    m[:, _ROT] = mat_to_6d(R).reshape(s, NUM_JOINTS * 6).numpy()
+    return m
 def _quat_from_6d(r6):
     rot6d_to_mat, _, mat_to_quat, _ = _pt3d()
     return mat_to_quat(rot6d_to_mat(r6))
