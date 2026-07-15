@@ -1,6 +1,6 @@
 # AgentLODGE
 
-End-to-end pipeline that accepts a song, generates dances with **LODGE** and **EDGE** in parallel, selects the best result with an LLM agent, and generates a costume illustration derived entirely from the audio.
+End-to-end pipeline that accepts a song, generates dances with **LODGE** and **EDGE** in parallel, then either **selects** the more coherent whole dance with an LLM agent **or intertwines both** into a single hybrid whose style source changes per musical section (see [Hybrid mode](#hybrid-intertwined-mode)), and generates a costume illustration derived entirely from the audio.
 
 ![AgentLODGE pipeline](docs/pipeline_diagram.png)
 
@@ -8,10 +8,44 @@ End-to-end pipeline that accepts a song, generates dances with **LODGE** and **E
 
 1. **Audio preprocessing** — Librosa 35-dim features (LODGE) and Jukebox embeddings (EDGE) at 30 FPS
 2. **Parallel dance generation** — LODGE global+PDDM and EDGE long-form (5s clips, 2.5s overlap)
-3. **Dance selection agent** — an LLM reasons over per-window **long-term coherence** signals (seam smoothness, jitter, foot stability, sustained beat-sync trend, variety), scores each dance on a coherence rubric, and picks the more coherent long-form dance; beat alignment and diversity are secondary tie-breakers
+3. **Dance selection agent** — an LLM reasons over per-window **long-term coherence** signals (seam smoothness, jitter, foot stability, sustained beat-sync trend, variety), scores each dance on a coherence rubric, and picks the more coherent long-form dance; beat alignment and diversity are secondary tie-breakers. *(Alternatively, enable [Hybrid mode](#hybrid-intertwined-mode) to intertwine LODGE and EDGE per section instead of picking one.)*
 4. **Dance video** — the selected motion is rendered to an mp4 (audio muxed). Backends (set with `AGENTLODGE_RENDER_BACKEND`): a fast **stick figure** (SMPL forward kinematics + matplotlib, no extra assets, default), or **Blender** 3D rendering in an EDGE-style studio (cyclorama backdrop, spotlight vignette, follow camera). The Blender character is chosen with `AGENTLODGE_RENDER_CHARACTER`: `smplx` (smooth SMPL-X mesh, needs the licence-gated SMPL-X body model) or `ybot` (EDGE's segmented Mixamo Y-Bot robot, needs EDGE's `ybot.fbx` — no SMPL-X model required)
 5. **Costume description agent** — an LLM turns the song's acoustic features (tempo, energy, timbre, key/mode, rhythmic density) plus the `LODGE_GENRE` hint into a costume description
 6. **Costume image generation** — OpenAI (`gpt-image-1`) or Gemini Imagen renders the audio-derived description
+
+## Hybrid (intertwined) mode
+
+By default the pipeline picks **one** generator's whole dance. Setting `AGENTLODGE_HYBRID=1`
+instead assembles **one** dance from time-segments of **both** LODGE and EDGE, so the style
+source changes across the song wherever that improves the overall composition. It is
+**training-free** — each segment keeps its generator's native quality, and switches are made
+seamless afterward rather than by cross-conditioning the models.
+
+How it works:
+
+1. **Segmentation** — the song is cut on musical downbeats; every segment is at least
+   `AGENTLODGE_HYBRID_MIN_SEG` seconds (≈ each generator's native window), which is the only floor
+   on switch frequency (there is no switch penalty).
+2. **Scheduling** — a scheduler assigns LODGE or EDGE to each segment to minimise a single
+   **whole-dance objective** that balances smoothness (jerk, jitter, seam spikiness) against
+   musicality/energy/variety (weighted by `AGENTLODGE_HYBRID_EXPRESSIVENESS`). The default
+   `greedy_global` scheduler is a deterministic coordinate descent over the *assembled* dance
+   score (no network); `llm_global` lets an LLM propose whole schedules that are then measured
+   against the same objective (needs `OPENAI_API_KEY`). Both are seeded from all-EDGE / all-LODGE,
+   so the hybrid **never scores worse than the better parent**, and **beats both** when the
+   generators are complementary (each more coherent in different sections).
+3. **Seamless assembly** — at every LODGE↔EDGE switch the segments are joined with **inertialized
+   blending** (Bollo 2016) over `AGENTLODGE_HYBRID_BLEND` frames: the seam starts exactly at the
+   previous pose and eases into the next, avoiding teleports/pops. Facing is normalised so the
+   dancer stays camera-front throughout.
+
+The assembled hybrid becomes `selected_dance.npy` (with `selected_model = "hybrid"`), and the
+chosen schedule is recorded in `pipeline_log.json`. If anything fails, the pipeline falls back to
+normal single-model selection.
+
+```bash
+AGENTLODGE_HYBRID=1 python run_pipeline.py --audio path/to/song.wav --output_dir ./outputs
+```
 
 ## Requirements
 
@@ -81,11 +115,11 @@ Written to `output_dir`:
 
 | File | Description |
 |------|-------------|
-| `selected_dance.npy` | Selected motion array `(L, 139)` in SMPL format |
+| `selected_dance.npy` | Selected motion array `(L, 139)` in SMPL format (the assembled hybrid when `AGENTLODGE_HYBRID=1`) |
 | `dance_stick_figure.mp4` | Stick-figure animation of the selected dance, with input audio |
 | `dance_blender.mp4` | Blender studio render (SMPL-X mesh or EDGE Y-Bot robot), when `AGENTLODGE_RENDER_BACKEND=blender` |
 | `costume_output.png` | Generated costume illustration |
-| `pipeline_log.json` | Selection reasoning, metrics, and errors |
+| `pipeline_log.json` | Selection reasoning, metrics, hybrid schedule (in hybrid mode), and errors |
 
 You can also render a saved motion file directly:
 
@@ -116,6 +150,12 @@ Stick-figure rendering needs `LODGE/data/smplx_neu_J_1.npy` (same file LODGE use
 | `LODGE_GLOBAL_WEIGHTS_PATH` | Global choreography checkpoint |
 | `EDGE_WEIGHTS_PATH` | EDGE model checkpoint |
 | `LODGE_GENRE` | FineDance genre label, also used as a costume style hint (default: `Hiphop`) |
+| `AGENTLODGE_HYBRID` | Enable [hybrid intertwined mode](#hybrid-intertwined-mode) (`1`/`true` to intertwine LODGE+EDGE; default off) |
+| `AGENTLODGE_HYBRID_SCHEDULER` | Hybrid scheduler: `greedy_global` (default, deterministic) or `llm_global` (LLM-proposed, needs `OPENAI_API_KEY`) |
+| `AGENTLODGE_HYBRID_MIN_SEG` | Minimum segment length in seconds / switch floor (default: `8.5`) |
+| `AGENTLODGE_HYBRID_EXPRESSIVENESS` | Weight on musicality/energy/variety vs. pure smoothness in the whole-dance objective (default: `4.0`) |
+| `AGENTLODGE_HYBRID_BLEND` | Inertialized transition length in frames at each switch (default: `15`) |
+| `AGENTLODGE_HYBRID_CANONICAL_FACING` | Normalise each segment's facing toward the camera (default: on) |
 
 ## Error handling
 
@@ -126,6 +166,7 @@ Stick-figure rendering needs `LODGE/data/smplx_neu_J_1.npy` (same file LODGE use
 - Image generation failure → logged; dance output still saved
 - Stick figure video failure → logged; motion and costume outputs still saved
 - Selection agent failure → defaults to LODGE
+- Hybrid assembly failure (in `AGENTLODGE_HYBRID=1` mode) → logged; falls back to normal single-model selection
 
 ## License
 
