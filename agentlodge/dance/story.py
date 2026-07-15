@@ -32,10 +32,13 @@ logger = logging.getLogger(__name__)
 _KIN = 135  # translation(3) + rotation(132); excludes the 4 contact labels
 DEFAULT_EXPRESSIVENESS = 4.0
 
-# Per-section selection weights (all three terms are ~[0,1] scale after normalization).
+# Per-section selection weights. The storyboard encodes the musical intent (form alignment, energy
+# arc, sectional contrast), so plan adherence (arc + generator bias) drives selection; local
+# coherence is a lighter tie-breaker (seam smoothness is separately handled by inertialization).
+_W_COH = 0.4     # weight on the (bounded, relative) local-coherence penalty
 _W_ARC = 0.6     # penalty for missing the plan's target energy
-_W_BIAS = 0.35   # bonus for matching the plan's preferred generator
-_W_REUSE = 0.25  # bonus for reusing a motif the plan asked for
+_W_BIAS = 0.5    # bonus for matching the plan's preferred generator
+_W_REUSE = 0.3   # bonus for reusing a motif the plan asked for
 
 
 @dataclass
@@ -74,12 +77,17 @@ def _coh_badness(clip: np.ndarray) -> float:
     return jerk + foot
 
 
-def _minmax_norm(values: dict) -> dict:
-    vals = np.array(list(values.values()), dtype=np.float64)
-    lo, hi = float(vals.min()), float(vals.max())
-    if hi <= lo:
-        return {k: 0.0 for k in values}
-    return {k: (v - lo) / (hi - lo) for k, v in values.items()}
+def _coh_penalty(values: dict) -> dict:
+    """Bounded RELATIVE coherence penalty in [0, 1].
+
+    ``0`` for the smoothest candidate; others penalized by their fractional excess badness over
+    the best, clipped at 1.0. Unlike min-max normalization this reflects the *actual* magnitude of
+    the difference, so near-equal candidates get near-equal penalties (letting the storyboard's
+    arc/bias decide) while a genuinely much rougher candidate is still penalized.
+    """
+    vals = {k: float(v) for k, v in values.items()}
+    bmin = min(vals.values())
+    return {k: float(np.clip((v - bmin) / (bmin + 1e-6), 0.0, 1.0)) for k, v in vals.items()}
 
 
 def _bias_bonus(source: str, plan: SectionPlan) -> float:
@@ -146,12 +154,12 @@ def select_sources(lodge_z: np.ndarray, edge_z: np.ndarray, structure: MusicStru
         emin, emax = min(energies.values()), max(energies.values())
         erel = {k: (0.0 if emax <= emin else (v - emin) / (emax - emin))
                 for k, v in energies.items()}
-        coh_n = _minmax_norm({k: _coh_badness(v) for k, v in cands.items()})
+        coh_pen = _coh_penalty({k: _coh_badness(v) for k, v in cands.items()})
 
         costs = {}
         for k in cands:
             arc_pen = abs(erel[k] - float(plan.target_intensity))
-            costs[k] = coh_n[k] + _W_ARC * arc_pen + _bias_bonus(k, plan)
+            costs[k] = _W_COH * coh_pen[k] + _W_ARC * arc_pen + _bias_bonus(k, plan)
         source = min(costs, key=costs.get)
 
         chosen_raw[i] = cands[source]
