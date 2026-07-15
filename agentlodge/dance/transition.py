@@ -213,3 +213,138 @@ def blend_onto(prev_tail139: np.ndarray, seg139: np.ndarray, blend_frames: int =
     seg[:, _TRANS] = seg_tr
     seg[:, _ROT] = _6d_from_quat(seg_q).reshape(n, NUM_JOINTS * 6)
     return seg.numpy().astype(np.float32)
+
+
+# --------------------------------------------------------------------------- pure-numpy transforms
+# retime / mirror / amplitude_scale operate directly on the AgentLODGE 139 layout using ONLY numpy
+# (no torch/pytorch3d), so they run anywhere and are unit-testable without the heavy rotation
+# backend. The 6D<->matrix conversion follows the pytorch3d convention used elsewhere in this
+# module (the 6 numbers are the first two ROWS of the rotation matrix).
+
+# SMPL body-joint left/right pairs (22-joint layout) for lateral mirroring.
+_SMPL_LR_PAIRS = [(1, 2), (4, 5), (7, 8), (10, 11), (13, 14), (16, 17), (18, 19), (20, 21)]
+# Reflect the lateral (X) axis of the Z-up frame. A rotation mirrors as R' = D R D.
+_MIRROR_D = np.diag([-1.0, 1.0, 1.0]).astype(np.float32)
+
+
+def _sixd_to_matrix(d6: np.ndarray) -> np.ndarray:
+    """(..., 6) -> (..., 3, 3): rows b1,b2,b3 via Gram-Schmidt (pytorch3d convention)."""
+    a1 = d6[..., 0:3]
+    a2 = d6[..., 3:6]
+    b1 = a1 / (np.linalg.norm(a1, axis=-1, keepdims=True) + 1e-8)
+    a2 = a2 - np.sum(b1 * a2, axis=-1, keepdims=True) * b1
+    b2 = a2 / (np.linalg.norm(a2, axis=-1, keepdims=True) + 1e-8)
+    b3 = np.cross(b1, b2)
+    return np.stack([b1, b2, b3], axis=-2)
+
+
+def _matrix_to_sixd(R: np.ndarray) -> np.ndarray:
+    """(..., 3, 3) -> (..., 6): first two rows flattened (pytorch3d convention)."""
+    return R[..., :2, :].reshape(*R.shape[:-2], 6)
+
+
+def _matrix_to_axis_angle(R: np.ndarray) -> np.ndarray:
+    """(..., 3, 3) -> (..., 3): rotation vector (axis * angle)."""
+    tr = np.trace(R, axis1=-2, axis2=-1)
+    cos = np.clip((tr - 1.0) / 2.0, -1.0, 1.0)
+    angle = np.arccos(cos)
+    axis = np.stack(
+        [R[..., 2, 1] - R[..., 1, 2],
+         R[..., 0, 2] - R[..., 2, 0],
+         R[..., 1, 0] - R[..., 0, 1]], axis=-1,
+    )
+    norm = np.linalg.norm(axis, axis=-1, keepdims=True)
+    axis = np.where(norm < 1e-8, 0.0, axis / (norm + 1e-12))
+    return axis * angle[..., None]
+
+
+def _axis_angle_to_matrix(aa: np.ndarray) -> np.ndarray:
+    """(..., 3) rotation vector -> (..., 3, 3) rotation matrix (Rodrigues)."""
+    angle = np.linalg.norm(aa, axis=-1, keepdims=True)
+    axis = aa / (angle + 1e-12)
+    a = angle[..., 0]
+    x, y, z = axis[..., 0], axis[..., 1], axis[..., 2]
+    c, s = np.cos(a), np.sin(a)
+    C = 1.0 - c
+    R = np.stack([
+        c + x * x * C, x * y * C - z * s, x * z * C + y * s,
+        y * x * C + z * s, c + y * y * C, y * z * C - x * s,
+        z * x * C - y * s, z * y * C + x * s, c + z * z * C,
+    ], axis=-1).reshape(*aa.shape[:-1], 3, 3)
+    return R.astype(np.float32)
+
+
+def retime(motion139: np.ndarray, n_frames: int) -> np.ndarray:
+    """Resample a 139-dim clip to ``n_frames`` (linear time-warp).
+
+    Translation and rotation channels are linearly interpolated on a normalized time grid;
+    rotations are re-orthonormalized (6D Gram-Schmidt) and contacts re-binarized at 0.5. Used to
+    fit a reused motif clip into a target section of a different length.
+    """
+    m = motion139.astype(np.float32)
+    length = m.shape[0]
+    n = int(n_frames)
+    if n <= 0:
+        raise ValueError(f"n_frames must be positive, got {n}")
+    if length == n:
+        return m.copy()
+    if length == 1:
+        return np.repeat(m, n, axis=0)
+    t_old = np.linspace(0.0, 1.0, length)
+    t_new = np.linspace(0.0, 1.0, n)
+    out = np.empty((n, 139), dtype=np.float32)
+    for ch in range(139):
+        out[:, ch] = np.interp(t_new, t_old, m[:, ch])
+    r6 = out[:, _ROT].reshape(n, NUM_JOINTS, 6)
+    out[:, _ROT] = _matrix_to_sixd(_sixd_to_matrix(r6)).reshape(n, NUM_JOINTS * 6)
+    out[:, _CONTACT] = (out[:, _CONTACT] > 0.5).astype(np.float32)
+    return out
+
+
+def mirror(motion139: np.ndarray) -> np.ndarray:
+    """Lateral (left<->right) mirror of a 139-dim clip.
+
+    Reflects the frame across the sagittal plane (negate lateral X translation, conjugate every
+    joint rotation by ``diag(-1,1,1)``), swaps left/right SMPL joints, and swaps the L/R foot
+    contacts. ``mirror(mirror(x)) == x``. Used to produce a varied motif recurrence.
+    """
+    m = motion139.astype(np.float32)
+    length = m.shape[0]
+    out = m.copy()
+    out[:, _TRANS] = m[:, _TRANS] * np.array([-1.0, 1.0, 1.0], dtype=np.float32)
+    R = _sixd_to_matrix(m[:, _ROT].reshape(length, NUM_JOINTS, 6))
+    Rm = _MIRROR_D @ R @ _MIRROR_D
+    r6m = _matrix_to_sixd(Rm)
+    perm = np.arange(NUM_JOINTS)
+    for left, right in _SMPL_LR_PAIRS:
+        perm[left], perm[right] = right, left
+    out[:, _ROT] = r6m[:, perm, :].reshape(length, NUM_JOINTS * 6)
+    contact = m[:, _CONTACT]
+    out[:, _CONTACT] = contact[:, [2, 3, 0, 1]]
+    return out
+
+
+def amplitude_scale(motion139: np.ndarray, alpha: float,
+                    *, clamp: tuple[float, float] = (0.7, 1.4)) -> np.ndarray:
+    """Scale movement amplitude about the clip's mean pose by ``alpha`` (clamped).
+
+    Translation deviation from the temporal mean is scaled linearly; each joint rotation's angle
+    relative to its mean rotation is scaled (axis preserved). ``alpha`` > 1 exaggerates, < 1
+    calms. EXPERIMENTAL / off by default (may reduce realism); gated behind validation.
+    """
+    alpha = float(np.clip(alpha, clamp[0], clamp[1]))
+    m = motion139.astype(np.float32)
+    length = m.shape[0]
+    if length < 2 or abs(alpha - 1.0) < 1e-6:
+        return m.copy()
+    out = m.copy()
+    tmean = m[:, _TRANS].mean(axis=0, keepdims=True)
+    out[:, _TRANS] = tmean + alpha * (m[:, _TRANS] - tmean)
+    r6 = m[:, _ROT].reshape(length, NUM_JOINTS, 6)
+    R = _sixd_to_matrix(r6)                                  # (L, 22, 3, 3)
+    r_mean = _sixd_to_matrix(r6.mean(axis=0))                # (22, 3, 3)
+    rel = np.einsum("jba,ljbc->ljac", r_mean, R)             # r_mean^T @ R
+    rel_scaled = _axis_angle_to_matrix(_matrix_to_axis_angle(rel) * alpha)
+    scaled = np.einsum("jab,ljbc->ljac", r_mean, rel_scaled)  # r_mean @ rel_scaled
+    out[:, _ROT] = _matrix_to_sixd(scaled).reshape(length, NUM_JOINTS * 6)
+    return out

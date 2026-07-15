@@ -61,6 +61,10 @@ class Settings:
     hybrid_scheduler: str = "greedy_global"
     hybrid_expressiveness: float = 4.0
     hybrid_canonical_facing: bool = True
+    story_enabled: bool = False
+    story_motif_reuse: bool = True
+    story_energy_shaping: bool = False
+    story_min_section_seconds: float = 8.0
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -105,6 +109,12 @@ class Settings:
             hybrid_expressiveness=float(os.getenv("AGENTLODGE_HYBRID_EXPRESSIVENESS", "4.0")),
             hybrid_canonical_facing=os.getenv("AGENTLODGE_HYBRID_CANONICAL_FACING", "1").lower()
             not in {"0", "false", "no"},
+            story_enabled=os.getenv("AGENTLODGE_STORY", "0").lower() in {"1", "true", "yes"},
+            story_motif_reuse=os.getenv("AGENTLODGE_STORY_MOTIF", "1").lower()
+            not in {"0", "false", "no"},
+            story_energy_shaping=os.getenv("AGENTLODGE_STORY_ENERGY_SHAPE", "0").lower()
+            in {"1", "true", "yes"},
+            story_min_section_seconds=float(os.getenv("AGENTLODGE_STORY_MIN_SECTION", "8.0")),
         )
 
     @classmethod
@@ -145,6 +155,10 @@ class Settings:
             hybrid_scheduler=data.get("hybrid_scheduler", "greedy_global"),
             hybrid_expressiveness=float(data.get("hybrid_expressiveness", 4.0)),
             hybrid_canonical_facing=bool(data.get("hybrid_canonical_facing", True)),
+            story_enabled=bool(data.get("story_enabled", False)),
+            story_motif_reuse=bool(data.get("story_motif_reuse", True)),
+            story_energy_shaping=bool(data.get("story_energy_shaping", False)),
+            story_min_section_seconds=float(data.get("story_min_section_seconds", 8.0)),
         )
 
     def validate_image_backend(self) -> None:

@@ -137,14 +137,21 @@ _SCORE_WEIGHTS = {
 # against LODGE's energy so the coherence-optimal dance genuinely mixes both (see design plan).
 DEFAULT_EXPRESSIVENESS = 4.0
 _DIVERSITY_WEIGHT = 0.2
+# Structure-awareness rewards (only applied when a MusicStructure is supplied). Both terms are
+# "higher = better" so they enter the cost with a negative sign.
+_ARC_WEIGHT = 2.0
+_CONTRAST_WEIGHT = 0.3
 
 
 def whole_dance_score(
     motion: np.ndarray, metadata: SongMetadata, *,
-    expressiveness: float = DEFAULT_EXPRESSIVENESS,
+    expressiveness: float = DEFAULT_EXPRESSIVENESS, structure=None,
 ) -> tuple[float, dict]:
     """Scalar whole-dance cost (lower=better) + breakdown: penalise unsmoothness/instability,
-    reward musicality (beat) + expressiveness (energy) + variety (diversity)."""
+    reward musicality (beat) + expressiveness (energy) + variety (diversity).
+
+    When ``structure`` (a MusicStructure) is provided, additional rewards for energy-arc adherence
+    and sectional contrast are folded in; without it the score is unchanged (hybrid path)."""
     from agentlodge.dance.metrics import compute_metrics
 
     dm = compute_metrics(motion, metadata, "hybrid", "")
@@ -164,6 +171,14 @@ def whole_dance_score(
             - expressiveness * energy - _DIVERSITY_WEIGHT * diversity)
     bd["expressiveness"] = energy
     bd["diversity"] = diversity
+    if structure is not None:
+        from agentlodge.dance.story_metrics import arc_adherence, sectional_contrast
+
+        arc = arc_adherence(motion, getattr(structure, "energy_curve", np.zeros(0)))
+        contrast = sectional_contrast(motion, getattr(structure, "sections", []))
+        cost -= _ARC_WEIGHT * arc + _CONTRAST_WEIGHT * contrast
+        bd["arc_adherence"] = arc
+        bd["sectional_contrast"] = contrast
     return float(cost), bd
 
 

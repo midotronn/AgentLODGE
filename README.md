@@ -47,6 +47,38 @@ normal single-model selection.
 AGENTLODGE_HYBRID=1 python run_pipeline.py --audio path/to/song.wav --output_dir ./outputs
 ```
 
+## Structured (story) mode
+
+`AGENTLODGE_STORY=1` adds a **long-horizon structure** layer on top of hybrid assembly, so the
+dance reads as a *composed* piece rather than freestyle: it is organized around the song's
+**musical form** (intro / verse / chorus / bridge / drop / outro) with a deliberate energy arc
+(build → climax → resolution), sectional contrast, and optional recurring motifs. It remains
+**training-free** — an LLM agent authors a high-level plan, which is realized by arranging LODGE
+and EDGE material with inertialized joins.
+
+How it works:
+
+1. **Structure analysis** (`agentlodge/audio/structure.py`) — librosa segments the song into
+   sections (Laplacian/agglomerative over chroma+MFCC), labels musically repeated sections
+   (self-similarity), and builds a per-frame energy arc (RMS + spectral flux). Boundaries snap to
+   downbeats; a robust fallback yields downbeat/uniform sections.
+2. **Storyboard agent** (`agentlodge/agent/storyboard.py`) — an LLM authors a `SectionPlan` per
+   section (role, target intensity along the arc, movement vocabulary, preferred generator, and
+   optional motif reuse). A deterministic rule-based fallback runs when no `OPENAI_API_KEY` is set,
+   so the mode works offline.
+3. **Structure-aware assembly** (`agentlodge/dance/story.py`) — per section it picks the material
+   (LODGE / EDGE / a retimed·mirrored motif reuse) that best matches the plan while staying smooth,
+   and joins source changes with the same inertialized (Bollo 2016) transition as the hybrid.
+
+The assembled dance becomes `selected_dance.npy` (`selected_model = "story"`); the detected
+structure, storyboard, and structure metrics (arc adherence, sectional contrast, motif recurrence,
+boundary alignment, seam jerk) are logged to `pipeline_log.json`. On any failure the pipeline falls
+back to hybrid, then single-model selection.
+
+```bash
+AGENTLODGE_STORY=1 python run_pipeline.py --audio path/to/song.wav --output_dir ./outputs
+```
+
 ## Requirements
 
 - Python 3.10+
@@ -115,7 +147,7 @@ Written to `output_dir`:
 
 | File | Description |
 |------|-------------|
-| `selected_dance.npy` | Selected motion array `(L, 139)` in SMPL format (the assembled hybrid when `AGENTLODGE_HYBRID=1`) |
+| `selected_dance.npy` | Selected motion array `(L, 139)` in SMPL format (assembled hybrid when `AGENTLODGE_HYBRID=1`, or structured "story" dance when `AGENTLODGE_STORY=1`) |
 | `dance_stick_figure.mp4` | Stick-figure animation of the selected dance, with input audio |
 | `dance_blender.mp4` | Blender studio render (SMPL-X mesh or EDGE Y-Bot robot), when `AGENTLODGE_RENDER_BACKEND=blender` |
 | `costume_output.png` | Generated costume illustration |
@@ -156,6 +188,10 @@ Stick-figure rendering needs `LODGE/data/smplx_neu_J_1.npy` (same file LODGE use
 | `AGENTLODGE_HYBRID_EXPRESSIVENESS` | Weight on musicality/energy/variety vs. pure smoothness in the whole-dance objective (default: `4.0`) |
 | `AGENTLODGE_HYBRID_BLEND` | Inertialized transition length in frames at each switch (default: `15`) |
 | `AGENTLODGE_HYBRID_CANONICAL_FACING` | Normalise each segment's facing toward the camera (default: on) |
+| `AGENTLODGE_STORY` | Enable [structured (story) mode](#structured-story-mode) (`1`/`true`; layers on hybrid assembly; default off) |
+| `AGENTLODGE_STORY_MOTIF` | Allow recurring-motif reuse across same-form sections (default: on) |
+| `AGENTLODGE_STORY_ENERGY_SHAPE` | Apply bounded amplitude shaping toward each section's target intensity (experimental; default: off) |
+| `AGENTLODGE_STORY_MIN_SECTION` | Minimum musical section length in seconds (default: `8.0`) |
 
 ## Error handling
 
@@ -167,6 +203,7 @@ Stick-figure rendering needs `LODGE/data/smplx_neu_J_1.npy` (same file LODGE use
 - Stick figure video failure → logged; motion and costume outputs still saved
 - Selection agent failure → defaults to LODGE
 - Hybrid assembly failure (in `AGENTLODGE_HYBRID=1` mode) → logged; falls back to normal single-model selection
+- Story assembly failure (in `AGENTLODGE_STORY=1` mode) → logged; falls back to hybrid, then single-model selection
 
 ## License
 

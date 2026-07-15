@@ -19,6 +19,10 @@ from agentlodge.audio.preprocess import PreprocessedAudio, preprocess_audio, rel
 from agentlodge.config import FPS, Settings
 from agentlodge.dance.format import ensure_lodge139
 from agentlodge.dance.hybrid import build_hybrid, _merge_runs
+from agentlodge.audio.structure import analyze_structure
+from agentlodge.agent.storyboard import author_storyboard
+from agentlodge.dance.story import build_story_dance
+from agentlodge.dance.story_metrics import compute_story_metrics
 from agentlodge.dance.metrics import DanceMetrics, compute_metrics
 from agentlodge.image.costume import generate_costume_image
 from agentlodge.subprocess_runner import (
@@ -49,6 +53,8 @@ class PipelineResult:
     song_duration_seconds: float = 0.0
     costume_description: str = ""
     stick_figure_video: Path | None = None
+    storyboard: dict | None = None
+    structure_metrics: dict | None = None
     errors: list[str] = field(default_factory=list)
 
 
@@ -224,6 +230,10 @@ def _settings_to_dict(settings: Settings) -> dict:
         "hybrid_scheduler": settings.hybrid_scheduler,
         "hybrid_expressiveness": settings.hybrid_expressiveness,
         "hybrid_canonical_facing": settings.hybrid_canonical_facing,
+        "story_enabled": settings.story_enabled,
+        "story_motif_reuse": settings.story_motif_reuse,
+        "story_energy_shaping": settings.story_energy_shaping,
+        "story_min_section_seconds": settings.story_min_section_seconds,
     }
 
 
@@ -340,10 +350,61 @@ def run_pipeline(
     selection_analysis = ""
     selection_scores: dict | None = None
     hybrid_schedule: list | None = None
+    story_schedule: list | None = None
+    structure_payload: dict | None = None
+    storyboard_payload: dict | None = None
+    structure_metrics_payload: dict | None = None
     selected_motion = None
 
     if (
-        settings.hybrid_enabled
+        settings.story_enabled
+        and lodge_out.motion is not None
+        and edge_out.motion is not None
+    ):
+        try:
+            total_frames = int(min(lodge_out.motion.shape[0], edge_out.motion.shape[0]))
+            structure = analyze_structure(
+                preprocessed.wav_path,
+                preprocessed.metadata,
+                total_frames,
+                min_section_seconds=settings.story_min_section_seconds,
+            )
+            storyboard = author_storyboard(
+                structure,
+                preprocessed.metadata,
+                preprocessed.audio_descriptor,
+                settings.openai_api_key,
+                motif_reuse=settings.story_motif_reuse,
+            )
+            story = build_story_dance(
+                lodge_out.motion,
+                edge_out.motion,
+                structure,
+                storyboard,
+                preprocessed.metadata,
+                blend_frames=settings.hybrid_blend_frames,
+                motif_reuse=settings.story_motif_reuse,
+                energy_shaping=settings.story_energy_shaping,
+            )
+            selected_model = "story"
+            selected_motion = story.motion
+            reasoning = story.reasoning
+            story_schedule = [
+                [int(a), int(b), str(src), str(role)] for a, b, src, role in story.schedule
+            ]
+            structure_payload = structure.to_dict()
+            storyboard_payload = storyboard.to_dict()
+            structure_metrics_payload = compute_story_metrics(story.motion, structure)
+            logger.info("Story dance assembled (%d sections): %s",
+                        len(story_schedule), story.reasoning)
+        except Exception as exc:
+            msg = f"Story assembly failed: {exc}; falling back to hybrid/single-model."
+            errors.append(msg)
+            logger.error(msg)
+
+    if (
+        selected_motion is None
+        and settings.hybrid_enabled
         and lodge_out.motion is not None
         and edge_out.motion is not None
     ):
@@ -516,6 +577,10 @@ def run_pipeline(
         "selection_analysis": selection_analysis,
         "selection_scores": selection_scores,
         "hybrid_schedule": hybrid_schedule,
+        "story_schedule": story_schedule,
+        "structure": structure_payload,
+        "storyboard": storyboard_payload,
+        "structure_metrics": structure_metrics_payload,
         "lodge_bas": lodge_metrics.beat_alignment_score if lodge_metrics else None,
         "edge_bas": edge_metrics.beat_alignment_score if edge_metrics else None,
         "lodge_diversity": lodge_metrics.motion_diversity if lodge_metrics else None,
@@ -553,5 +618,7 @@ def run_pipeline(
         song_duration_seconds=preprocessed.metadata.duration_seconds,
         costume_description=costume_description,
         stick_figure_video=stick_figure_video,
+        storyboard=storyboard_payload,
+        structure_metrics=structure_metrics_payload,
         errors=errors,
     )
