@@ -56,6 +56,8 @@ dance reads as a *composed* piece rather than freestyle: it is organized around 
 **training-free** — an LLM agent authors a high-level plan, which is realized by arranging LODGE
 and EDGE material with inertialized joins.
 
+![Story choreography pipeline](docs/story_pipeline_diagram.png)
+
 How it works:
 
 1. **Structure analysis** (`agentlodge/audio/structure.py`) — librosa segments the song into
