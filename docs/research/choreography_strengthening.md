@@ -238,9 +238,12 @@ New modules: `dance/beat_metrics.py`, `dance/best_of_k.py`, `agent/segment_capti
 
 ## 8. Phased roadmap
 
-**Phase 0 — Measure the weakness (fast, high-value).**
-`beat_metrics.py` (BAS + PFC) + wire into `story_metrics`/`pipeline_log`. Now beat alignment is
-visible and every later change is measurable. *No model work.*
+**Phase 0 — Measure the weakness (fast, high-value).** ✅ **DONE** (commit 561e60f)
+`beat_metrics.py` (BAS + beat coverage + FK-free foot-contact consistency) wired into
+`compute_story_metrics` + `pipeline_log`. Beat alignment is now visible and every later change is
+measurable. Also landed `transition.retrograde` (Phase-1 primitive) + wired into the motif-reuse
+path + storyboard schema. 9 new tests (21 total pass). **Song-150 baseline:** BAS LODGE 0.406 /
+EDGE 0.391 / STORY 0.408; foot-consistency LODGE 0.513 / EDGE 1.000 / STORY 0.786. *No model work.*
 
 **Phase 1 — Structure & recapitulation (mostly training-free, high payoff).**
 S1–S3 (spectral-cluster labels, hypermeter, `repeat_of`) + R1 `retrograde` + R2 recapitulation
