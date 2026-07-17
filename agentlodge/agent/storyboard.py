@@ -78,6 +78,35 @@ class Storyboard:
             "plans": [p.to_dict() for p in self.plans],
         }
 
+    def describe(self) -> str:
+        """Human-readable multi-line summary of the plan (for INFO logging / inspection)."""
+        source = "rule-based fallback" if self.used_fallback else "LLM"
+        lines = [
+            f"arc      : {self.arc}",
+            f"source   : {source}",
+            f"reasoning: {self.reasoning or '(none)'}",
+            "sections :",
+        ]
+        for p in self.plans:
+            reuse = f" reuse<-{p.reuse_of}" if p.reuse_of is not None else ""
+            var = ""
+            if p.reuse_of is not None:
+                v = p.variation
+                flags = []
+                if v.get("mirror"):
+                    flags.append("mirror")
+                if abs(float(v.get("retime", 1.0)) - 1.0) > 1e-3:
+                    flags.append(f"retime={v['retime']}")
+                if abs(float(v.get("amplitude", 1.0)) - 1.0) > 1e-3:
+                    flags.append(f"amp={v['amplitude']}")
+                if flags:
+                    var = " [" + ",".join(flags) + "]"
+            lines.append(
+                f"  [{p.section_index}] {p.role:<8} intensity={p.target_intensity:.2f} "
+                f"bias={p.generator_bias:<5} vocab={p.vocabulary}{reuse}{var}"
+            )
+        return "\n".join(lines)
+
 
 # --------------------------------------------------------------------------- deterministic fallback
 def _vocab_for_energy(e: float) -> str:
@@ -234,21 +263,23 @@ def author_storyboard(structure: MusicStructure, metadata: "SongMetadata",
     if not structure.sections:
         return Storyboard(arc="(empty)", plans=[], reasoning="no sections", used_fallback=True)
     if not api_key:
-        return _rule_based_storyboard(structure, motif_reuse=motif_reuse)
-    try:
-        from openai import OpenAI
+        board = _rule_based_storyboard(structure, motif_reuse=motif_reuse)
+    else:
+        try:
+            from openai import OpenAI
 
-        client = OpenAI(api_key=api_key)
-        model = chat_model or os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
-        response = client.chat.completions.create(
-            model=model,
-            max_tokens=1200,
-            messages=[{"role": "user", "content": _build_prompt(structure, metadata, descriptor)}],
-        )
-        text = response.choices[0].message.content or ""
-        board = _parse_response(text, structure)
-        logger.info("Storyboard (LLM) authored: %s", board.arc)
-        return board
-    except Exception as exc:  # noqa: BLE001 - robust fallback on any failure
-        logger.warning("Storyboard agent failed (%s); using rule-based fallback", exc)
-        return _rule_based_storyboard(structure, motif_reuse=motif_reuse)
+            client = OpenAI(api_key=api_key)
+            model = chat_model or os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
+            response = client.chat.completions.create(
+                model=model,
+                max_tokens=1200,
+                messages=[{"role": "user", "content": _build_prompt(structure, metadata, descriptor)}],
+            )
+            text = response.choices[0].message.content or ""
+            board = _parse_response(text, structure)
+        except Exception as exc:  # noqa: BLE001 - robust fallback on any failure
+            logger.warning("Storyboard agent failed (%s); using rule-based fallback", exc)
+            board = _rule_based_storyboard(structure, motif_reuse=motif_reuse)
+    logger.info("Storyboard authored (%s):\n%s",
+                "rule-based fallback" if board.used_fallback else "LLM", board.describe())
+    return board

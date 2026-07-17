@@ -351,6 +351,7 @@ def run_pipeline(
     selection_scores: dict | None = None
     hybrid_schedule: list | None = None
     story_schedule: list | None = None
+    story_section_scores: list | None = None
     structure_payload: dict | None = None
     storyboard_payload: dict | None = None
     structure_metrics_payload: dict | None = None
@@ -394,6 +395,7 @@ def run_pipeline(
             ]
             structure_payload = structure.to_dict()
             storyboard_payload = storyboard.to_dict()
+            story_section_scores = story.section_scores
             structure_metrics_payload = compute_story_metrics(story.motion, structure)
             logger.info("Story dance assembled (%d sections): %s",
                         len(story_schedule), story.reasoning)
@@ -578,6 +580,7 @@ def run_pipeline(
         "selection_scores": selection_scores,
         "hybrid_schedule": hybrid_schedule,
         "story_schedule": story_schedule,
+        "story_section_scores": story_section_scores,
         "structure": structure_payload,
         "storyboard": storyboard_payload,
         "structure_metrics": structure_metrics_payload,

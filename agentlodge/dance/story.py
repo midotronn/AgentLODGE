@@ -162,10 +162,20 @@ def select_sources(lodge_z: np.ndarray, edge_z: np.ndarray, structure: MusicStru
             costs[k] = _W_COH * coh_pen[k] + _W_ARC * arc_pen + _bias_bonus(k, plan)
         source = min(costs, key=costs.get)
 
+        gen = "reuse" if source.startswith("reuse") else source
+        matched_bias = plan.generator_bias in {"lodge", "edge"} and gen == plan.generator_bias
         chosen_raw[i] = cands[source]
-        decisions.append({"a": a, "b": b, "source": source, "role": sec.role,
-                          "clip": cands[source], "costs": {k: round(v, 4) for k, v in costs.items()},
-                          "target_intensity": float(plan.target_intensity)})
+        decisions.append({
+            "a": a, "b": b, "source": source, "role": sec.role,
+            "clip": cands[source],
+            "costs": {k: round(v, 4) for k, v in costs.items()},
+            "target_intensity": float(plan.target_intensity),
+            "plan_bias": plan.generator_bias,
+            "matched_bias": bool(matched_bias),
+            "vocabulary": plan.vocabulary,
+            "energies": {k: round(float(energies[k]), 4) for k in cands},
+            "chosen_cost": round(float(costs[source]), 4),
+        })
     return decisions
 
 
@@ -218,13 +228,37 @@ def build_story_dance(lodge_motion: np.ndarray, edge_motion: np.ndarray,
 
     motion = assemble_story(decisions, blend_frames=blend_frames)
     schedule = [(d["a"], d["b"], d["source"], d["role"]) for d in decisions]
-    section_scores = [{k: d[k] for k in ("a", "b", "source", "role", "costs", "target_intensity")}
-                      for d in decisions]
+    _score_keys = ("a", "b", "source", "role", "costs", "target_intensity",
+                   "plan_bias", "matched_bias", "vocabulary", "energies", "chosen_cost")
+    section_scores = [{k: d[k] for k in _score_keys} for d in decisions]
     n_reuse = sum(1 for d in decisions if d["source"].startswith("reuse"))
     n_lodge = sum(1 for d in decisions if d["source"] == "lodge")
-    reasoning = (f"story assembly: {len(decisions)} sections "
-                 f"({n_lodge} LODGE, {sum(1 for d in decisions if d['source']=='edge')} EDGE, "
-                 f"{n_reuse} motif-reuse)")
-    logger.info("Story schedule: %s", reasoning)
+    n_edge = sum(1 for d in decisions if d["source"] == "edge")
+    n_honored = sum(1 for d in decisions if d["matched_bias"])
+    n_biased = sum(1 for d in decisions if d["plan_bias"] in {"lodge", "edge"})
+
+    from agentlodge.config import FPS
+    arc = storyboard.arc if storyboard is not None else "?"
+    logger.info("Story: realizing %d-section plan (arc: %s)", len(decisions), arc)
+    for d in decisions:
+        a, b = d["a"], d["b"]
+        mark = "=bias" if d["matched_bias"] else ("~auto" if d["plan_bias"] == "auto" else "!=bias")
+        cost_str = " ".join(f"{k}:{v:.3f}" for k, v in d["costs"].items())
+        logger.info(
+            "  %5.1f-%5.1fs %-8s -> %-8s (%s) plan[bias=%-5s tgtE=%.2f] chose_cost=%.3f | costs %s",
+            a / FPS, b / FPS, d["role"], d["source"], mark,
+            d["plan_bias"], d["target_intensity"], d["chosen_cost"], cost_str,
+        )
+
+    schedule_summary = ", ".join(
+        f"{a / FPS:.1f}-{b / FPS:.1f}s:{src}[{role}]" for a, b, src, role in schedule
+    )
+    reasoning = (
+        f"story assembly: {len(decisions)} sections "
+        f"({n_lodge} LODGE, {n_edge} EDGE, {n_reuse} motif-reuse); "
+        f"storyboard bias honored in {n_honored}/{n_biased} explicitly-biased sections; "
+        f"schedule: {schedule_summary}"
+    )
+    logger.info("Story schedule: %s", schedule_summary)
     return StoryResult(motion=motion, schedule=schedule, storyboard=storyboard,
                        structure=structure, reasoning=reasoning, section_scores=section_scores)
