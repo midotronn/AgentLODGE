@@ -130,11 +130,15 @@ def seam_jerk(motion: np.ndarray, sections: list, window: int = 15) -> tuple[flo
     return float(peak), float(area / max(count, 1))
 
 
-def compute_story_metrics(motion: np.ndarray, structure) -> dict:
-    """Aggregate all structure metrics for an assembled dance + its MusicStructure."""
+def compute_story_metrics(motion: np.ndarray, structure, *, music_beat_frames=None) -> dict:
+    """Aggregate all structure metrics for an assembled dance + its MusicStructure.
+
+    When ``music_beat_frames`` (motion-frame indices, e.g. ``metadata.beat_frames``) are provided,
+    beat-alignment metrics (BAS, coverage, foot-contact consistency) are included too.
+    """
     sections = getattr(structure, "sections", [])
     peak_jerk, auj = seam_jerk(motion, sections)
-    return {
+    metrics = {
         "arc_adherence": round(arc_adherence(motion, getattr(structure, "energy_curve",
                                                              np.zeros(0))), 4),
         "sectional_contrast": round(sectional_contrast(motion, sections), 4),
@@ -143,3 +147,7 @@ def compute_story_metrics(motion: np.ndarray, structure) -> dict:
         "peak_jerk": round(peak_jerk, 4),
         "area_under_jerk": round(auj, 4),
     }
+    if music_beat_frames is not None:
+        from agentlodge.dance.beat_metrics import compute_beat_metrics
+        metrics.update(compute_beat_metrics(motion, music_beat_frames))
+    return metrics

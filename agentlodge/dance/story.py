@@ -22,7 +22,7 @@ import numpy as np
 from agentlodge.audio.structure import MusicStructure, Section
 from agentlodge.agent.storyboard import Storyboard, SectionPlan
 from agentlodge.dance.format import ensure_lodge139, to_agentlodge139
-from agentlodge.dance.transition import amplitude_scale, blend_onto, mirror, retime, to_zup
+from agentlodge.dance.transition import amplitude_scale, blend_onto, mirror, retime, retrograde, to_zup
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from agentlodge.audio.preprocess import SongMetadata
@@ -145,6 +145,8 @@ def select_sources(lodge_z: np.ndarray, edge_z: np.ndarray, structure: MusicStru
             reuse_clip = retime(chosen_raw[plan.reuse_of], b - a)
             if plan.variation.get("mirror"):
                 reuse_clip = mirror(reuse_clip)
+            if plan.variation.get("retrograde"):
+                reuse_clip = retrograde(reuse_clip)
             if energy_shaping and abs(float(plan.variation.get("amplitude", 1.0)) - 1.0) > 1e-3:
                 reuse_clip = amplitude_scale(reuse_clip, float(plan.variation["amplitude"]))
             cands[f"reuse:{plan.reuse_of}"] = reuse_clip

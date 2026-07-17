@@ -95,6 +95,8 @@ class Storyboard:
                 flags = []
                 if v.get("mirror"):
                     flags.append("mirror")
+                if v.get("retrograde"):
+                    flags.append("retrograde")
                 if abs(float(v.get("retime", 1.0)) - 1.0) > 1e-3:
                     flags.append(f"retime={v['retime']}")
                 if abs(float(v.get("amplitude", 1.0)) - 1.0) > 1e-3:
@@ -198,7 +200,9 @@ For EACH section (same count and order), decide:
 - vocabulary: one of {list(VOCABULARY)}.
 - generator_bias: "lodge" (flowing/graceful), "edge" (sharp/energetic), or "auto".
 - reuse_of: an EARLIER section index with the SAME repeat_label to recur its motif, else null.
-- variation: {{"mirror": bool, "retime": 1.0, "amplitude": 1.0}} (only meaningful when reuse_of set).
+- variation: {{"mirror": bool, "retrograde": bool, "retime": 1.0, "amplitude": 1.0}} (only
+  meaningful when reuse_of set; "retrograde" plays the reused motif backward in time -- good for a
+  B->A' return or mirroring the intro at the end).
 
 Respond with JSON ONLY, exactly:
 {{"arc": "one-sentence description of the energy/narrative arc",
@@ -206,7 +210,7 @@ Respond with JSON ONLY, exactly:
   "plans": [
     {{"section_index": 0, "role": "intro", "target_intensity": 0.1, "vocabulary": "grounded_minimal",
       "generator_bias": "lodge", "reuse_of": null,
-      "variation": {{"mirror": false, "retime": 1.0, "amplitude": 1.0}}}}
+      "variation": {{"mirror": false, "retrograde": false, "retime": 1.0, "amplitude": 1.0}}}}
   ]}}
 """
 
@@ -229,6 +233,7 @@ def _coerce_plan(raw: dict, idx: int, structure: MusicStructure) -> SectionPlan:
     var = raw.get("variation") or {}
     variation = {
         "mirror": bool(var.get("mirror", False)) if reuse_of is not None else False,
+        "retrograde": bool(var.get("retrograde", False)) if reuse_of is not None else False,
         "retime": float(var.get("retime", 1.0)) if reuse_of is not None else 1.0,
         "amplitude": float(np.clip(float(var.get("amplitude", 1.0)), 0.7, 1.4)) if reuse_of is not None else 1.0,
     }

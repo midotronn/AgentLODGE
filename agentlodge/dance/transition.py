@@ -324,6 +324,19 @@ def mirror(motion139: np.ndarray) -> np.ndarray:
     return out
 
 
+def retrograde(motion139: np.ndarray) -> np.ndarray:
+    """Temporal reversal ("mirror in time") of a 139-dim clip: play the phrase backward.
+
+    A classic choreographic variation device (retrograde; Blom & Chaplin, *The Intimate Act of
+    Choreography*): recur an earlier phrase in reverse so the return is structurally related yet
+    distinct. This simply reverses the frame order (contact channels included); rotations stay
+    valid (they are merely reordered). ``retrograde(retrograde(x)) == x``. Seam continuity when the
+    reversed clip is concatenated is handled by the assembler's inertialized ``blend_onto``, so no
+    internal smoothing is applied here.
+    """
+    return np.ascontiguousarray(motion139.astype(np.float32)[::-1])
+
+
 def amplitude_scale(motion139: np.ndarray, alpha: float,
                     *, clamp: tuple[float, float] = (0.7, 1.4)) -> np.ndarray:
     """Scale movement amplitude about the clip's mean pose by ``alpha`` (clamped).

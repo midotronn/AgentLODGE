@@ -396,7 +396,10 @@ def run_pipeline(
             structure_payload = structure.to_dict()
             storyboard_payload = storyboard.to_dict()
             story_section_scores = story.section_scores
-            structure_metrics_payload = compute_story_metrics(story.motion, structure)
+            structure_metrics_payload = compute_story_metrics(
+                story.motion, structure,
+                music_beat_frames=getattr(preprocessed.metadata, "beat_frames", None),
+            )
             logger.info("Story dance assembled (%d sections): %s",
                         len(story_schedule), story.reasoning)
         except Exception as exc:

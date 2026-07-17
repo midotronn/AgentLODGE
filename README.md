@@ -69,13 +69,15 @@ How it works:
    optional motif reuse). A deterministic rule-based fallback runs when no `OPENAI_API_KEY` is set,
    so the mode works offline.
 3. **Structure-aware assembly** (`agentlodge/dance/story.py`) — per section it picks the material
-   (LODGE / EDGE / a retimed·mirrored motif reuse) that best matches the plan while staying smooth,
-   and joins source changes with the same inertialized (Bollo 2016) transition as the hybrid.
+   (LODGE / EDGE / a retimed·mirrored·retrograded motif reuse) that best matches the plan while
+   staying smooth, and joins source changes with the same inertialized (Bollo 2016) transition as
+   the hybrid.
 
 The assembled dance becomes `selected_dance.npy` (`selected_model = "story"`); the detected
 structure, storyboard, and structure metrics (arc adherence, sectional contrast, motif recurrence,
-boundary alignment, seam jerk) are logged to `pipeline_log.json`. On any failure the pipeline falls
-back to hybrid, then single-model selection.
+boundary alignment, seam jerk, and — when beats are available — **beat alignment (BAS)**, beat
+coverage, and foot-contact consistency) are logged to `pipeline_log.json`. On any failure the
+pipeline falls back to hybrid, then single-model selection.
 
 ```bash
 AGENTLODGE_STORY=1 python run_pipeline.py --audio path/to/song.wav --output_dir ./outputs
