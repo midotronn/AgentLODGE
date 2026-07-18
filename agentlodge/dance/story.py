@@ -21,6 +21,7 @@ import numpy as np
 
 from agentlodge.audio.structure import MusicStructure, Section
 from agentlodge.agent.storyboard import Storyboard, SectionPlan
+from agentlodge.agent.segment_caption import caption_segment, plan_realization_alignment
 from agentlodge.dance.format import ensure_lodge139, to_agentlodge139
 from agentlodge.dance.transition import amplitude_scale, blend_onto, mirror, retime, retrograde, to_zup
 
@@ -191,6 +192,8 @@ def select_sources(lodge_z: np.ndarray, edge_z: np.ndarray, structure: MusicStru
             "vocabulary": plan.vocabulary,
             "energies": {k: round(float(energies[k]), 4) for k in cands},
             "chosen_cost": round(float(costs[source]), 4),
+            "caption": caption_segment(cands[source], energy_norm=erel[source]),
+            "plan_alignment": round(plan_realization_alignment(plan, erel[source]), 4),
         })
     return decisions
 
@@ -247,7 +250,8 @@ def build_story_dance(lodge_motion: np.ndarray, edge_motion: np.ndarray,
     motion = assemble_story(decisions, blend_frames=blend_frames)
     schedule = [(d["a"], d["b"], d["source"], d["role"]) for d in decisions]
     _score_keys = ("a", "b", "source", "role", "costs", "target_intensity",
-                   "plan_bias", "matched_bias", "vocabulary", "energies", "chosen_cost")
+                   "plan_bias", "matched_bias", "vocabulary", "energies", "chosen_cost",
+                   "caption", "plan_alignment")
     section_scores = [{k: d[k] for k in _score_keys} for d in decisions]
     n_reuse = sum(1 for d in decisions if d["source"].startswith("reuse"))
     n_lodge = sum(1 for d in decisions if d["source"] == "lodge")
