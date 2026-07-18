@@ -130,6 +130,24 @@ def seam_jerk(motion: np.ndarray, sections: list, window: int = 15) -> tuple[flo
     return float(peak), float(area / max(count, 1))
 
 
+def section_repetition_correlation(motion: np.ndarray, sections: list) -> float:
+    """Mean COSINE similarity of mean-pose features between SAME-label sections (ABA fidelity).
+
+    Directly measures whether the dance mirrors the music's repetition structure: when the music
+    repeats a section, does the motion recur? 1.0 == identical recurring material, 0.0 == none /
+    no repeats. Complements ``motif_recurrence`` (distance-based) with a scale-free cosine.
+    """
+    feats = _section_features(motion, sections)
+    labels = [s.label for s in sections if s.end_frame > s.start_frame]
+    sims = []
+    for i in range(len(feats)):
+        for j in range(i + 1, len(feats)):
+            if labels[i] == labels[j]:
+                a, b = feats[i], feats[j]
+                sims.append(float(np.dot(a, b) / ((np.linalg.norm(a) * np.linalg.norm(b)) + _EPS)))
+    return float(np.mean(sims)) if sims else 0.0
+
+
 def compute_story_metrics(motion: np.ndarray, structure, *, music_beat_frames=None) -> dict:
     """Aggregate all structure metrics for an assembled dance + its MusicStructure.
 
@@ -143,6 +161,7 @@ def compute_story_metrics(motion: np.ndarray, structure, *, music_beat_frames=No
                                                              np.zeros(0))), 4),
         "sectional_contrast": round(sectional_contrast(motion, sections), 4),
         "motif_recurrence": round(motif_recurrence(motion, sections), 4),
+        "section_repetition_correlation": round(section_repetition_correlation(motion, sections), 4),
         "boundary_alignment": round(boundary_alignment(motion, sections), 4),
         "peak_jerk": round(peak_jerk, 4),
         "area_under_jerk": round(auj, 4),

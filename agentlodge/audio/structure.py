@@ -49,6 +49,7 @@ class Section:
     label: int          # repetition group id; same label => musically similar section
     role: str           # one of _ROLES
     energy: float       # normalized [0, 1] mean intensity
+    repeat_of: int | None = None  # earliest earlier section with the same label, else None
 
     @property
     def n_frames(self) -> int:
@@ -63,6 +64,7 @@ class Section:
             "label": self.label,
             "role": self.role,
             "energy": round(self.energy, 3),
+            "repeat_of": self.repeat_of,
         }
 
 
@@ -189,6 +191,78 @@ def _recurrence(section_feats: np.ndarray) -> np.ndarray:
     return (unit @ unit.T).astype(np.float32)
 
 
+def _repeat_of_from_labels(labels: np.ndarray) -> list[int | None]:
+    """For each section, the earliest earlier section sharing its label (else None)."""
+    out: list[int | None] = []
+    first_seen: dict[int, int] = {}
+    for i, lab in enumerate(labels):
+        lab = int(lab)
+        if lab in first_seen:
+            out.append(first_seen[lab])
+        else:
+            out.append(None)
+            first_seen[lab] = i
+    return out
+
+
+def _kmeans_np(X: np.ndarray, k: int, *, iters: int = 50, seed: int = 0) -> np.ndarray:
+    """Tiny deterministic k-means (k-means++ init) for spectral clustering; no sklearn dependency."""
+    rng = np.random.default_rng(seed)
+    n = X.shape[0]
+    idx = [int(rng.integers(n))]
+    for _ in range(1, k):
+        d2 = np.min(np.linalg.norm(X[:, None, :] - X[idx][None, :, :], axis=2) ** 2, axis=1)
+        s = float(d2.sum())
+        idx.append(int(rng.integers(n)) if s <= 1e-12 else int(rng.choice(n, p=d2 / s)))
+    C = X[idx].astype(np.float64).copy()
+    labels = -np.ones(n, dtype=int)
+    for _ in range(iters):
+        new = np.linalg.norm(X[:, None, :] - C[None, :, :], axis=2).argmin(axis=1)
+        if np.array_equal(new, labels):
+            break
+        labels = new
+        for c in range(k):
+            m = labels == c
+            if m.any():
+                C[c] = X[m].mean(axis=0)
+    return labels
+
+
+def _spectral_labels(section_feats: np.ndarray, sim_thresh: float = 0.82,
+                     max_k: int | None = None) -> np.ndarray:
+    """Repetition labels via normalized-Laplacian spectral clustering (McFee & Ellis, ISMIR 2014).
+
+    Builds a thresholded cosine-similarity affinity over section mean-features, forms the symmetric
+    normalized Laplacian, picks k from the largest eigengap, and clusters the spectral embedding.
+    Captures GLOBAL relationships (a returning chorus groups with the first even without local
+    novelty between them). Deterministic; falls back to the greedy labeler for <= 2 sections.
+    """
+    n = int(section_feats.shape[0])
+    if n <= 2:
+        return _label_sections(section_feats, sim_thresh)
+    norms = np.linalg.norm(section_feats, axis=1, keepdims=True) + 1e-8
+    unit = section_feats / norms
+    sim = unit @ unit.T
+    A = np.where(sim >= sim_thresh, sim, 0.0).astype(np.float64)
+    np.fill_diagonal(A, 0.0)
+    if not np.any(A):
+        return np.arange(n, dtype=int)  # nothing repeats -> all distinct
+    dinv = 1.0 / np.sqrt(np.maximum(A.sum(axis=1), 1e-8))
+    L = np.eye(n) - (dinv[:, None] * A * dinv[None, :])
+    evals = np.clip(np.linalg.eigvalsh(L), 0.0, None)
+    upper = min(n, max_k or n)
+    gaps = np.diff(evals[:upper])
+    k = int(np.clip(int(np.argmax(gaps)) + 1 if gaps.size else 1, 1, n))
+    if k <= 1:
+        return np.zeros(n, dtype=int)
+    if k >= n:
+        return np.arange(n, dtype=int)
+    _, evecs = np.linalg.eigh(L)
+    embed = evecs[:, :k]
+    embed = embed / (np.linalg.norm(embed, axis=1, keepdims=True) + 1e-8)
+    return _kmeans_np(embed, k).astype(int)
+
+
 def _infer_roles(energies: np.ndarray, labels: np.ndarray) -> tuple[list[str], int]:
     """Assign a role to each section from energy rank, position and recurrence."""
     e = np.asarray(energies, dtype=np.float64)
@@ -218,7 +292,8 @@ def _infer_roles(energies: np.ndarray, labels: np.ndarray) -> tuple[list[str], i
 
 def _build_sections(bounds: list[int], energy_curve: np.ndarray,
                     section_feats: np.ndarray, tempo: float,
-                    total_frames: int, used_fallback: bool) -> MusicStructure:
+                    total_frames: int, used_fallback: bool, *,
+                    spectral: bool = False) -> MusicStructure:
     n = len(bounds) - 1
     energies = np.array([
         float(np.mean(energy_curve[bounds[i]:bounds[i + 1]]))
@@ -226,14 +301,18 @@ def _build_sections(bounds: list[int], energy_curve: np.ndarray,
         for i in range(n)
     ])
     energies_norm = _minmax(energies) if n > 1 else np.array([0.5] * n)
-    labels = (_label_sections(section_feats) if section_feats.shape[0] == n
-              else np.arange(n, dtype=int))
+    if section_feats.shape[0] == n:
+        labels = _spectral_labels(section_feats) if spectral else _label_sections(section_feats)
+    else:
+        labels = np.arange(n, dtype=int)
     roles, climax = _infer_roles(energies_norm, labels)
+    repeat_of = _repeat_of_from_labels(labels)
     sections = [
         Section(
             start_frame=int(bounds[i]), end_frame=int(bounds[i + 1]),
             start_sec=bounds[i] / FPS, end_sec=bounds[i + 1] / FPS,
             label=int(labels[i]), role=roles[i], energy=float(energies_norm[i]),
+            repeat_of=repeat_of[i],
         )
         for i in range(n)
     ]
@@ -265,11 +344,14 @@ def _fallback_structure(metadata: "SongMetadata", total_frames: int,
 
 # --------------------------------------------------------------------------- public API
 def analyze_structure(wav_path: str | Path, metadata: "SongMetadata", total_frames: int,
-                      *, min_section_seconds: float = 8.0, k: int | None = None) -> MusicStructure:
+                      *, min_section_seconds: float = 8.0, k: int | None = None,
+                      spectral: bool = False) -> MusicStructure:
     """Analyze a song into a :class:`MusicStructure` (sections + energy arc).
 
     ``total_frames`` is the target motion length (30 FPS); boundaries/energy are expressed in that
-    frame space. Falls back to downbeat/uniform sections on any failure.
+    frame space. ``spectral`` uses normalized-Laplacian spectral clustering (McFee & Ellis) for
+    section-type labels instead of the greedy cosine labeler. Falls back to downbeat/uniform
+    sections on any failure.
     """
     min_frames = max(int(min_section_seconds * FPS), 1)
     beats = np.asarray(getattr(metadata, "beat_frames", []), dtype=np.int64)
@@ -321,7 +403,7 @@ def analyze_structure(wav_path: str | Path, metadata: "SongMetadata", total_fram
         ])
         tempo = float(getattr(metadata, "bpm", 0.0))
         struct = _build_sections(bounds, energy_curve, section_feats, tempo,
-                                 total_frames, used_fallback=False)
+                                 total_frames, used_fallback=False, spectral=spectral)
         logger.info("Structure analysis: %d sections, climax@%d, roles=%s",
                     len(struct.sections), struct.climax_index,
                     [s.role for s in struct.sections])

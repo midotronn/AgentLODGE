@@ -187,7 +187,10 @@ def _build_prompt(structure: MusicStructure, metadata: "SongMetadata",
     return f"""You are a choreographer authoring a high-level STORYBOARD for a music-driven dance.
 The dance is assembled from two generators: LODGE (smooth, flowing, graceful, sustained) and EDGE
 (sharp, percussive, energetic). Design a coherent whole-song composition with an energy/narrative
-arc (build -> climax -> resolution), sectional contrast, and optional recurring motifs.
+arc (build -> climax -> resolution), sectional contrast, and optional recurring motifs. Favor
+RECAPITULATION for structure: when a section repeats an earlier one (same repeat_label), set
+reuse_of to recall its motif; for a satisfying ABA close, consider reusing the opening section at
+the final section with variation {{"mirror": true, "retrograde": true}}.
 
 Song: duration={getattr(metadata, 'duration_seconds', 0.0):.1f}s, bpm={getattr(metadata, 'bpm', 0.0):.0f},
 climax at section {structure.climax_index}.{desc}

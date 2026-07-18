@@ -39,6 +39,7 @@ _W_COH = 0.4     # weight on the (bounded, relative) local-coherence penalty
 _W_ARC = 0.6     # penalty for missing the plan's target energy
 _W_BIAS = 0.5    # bonus for matching the plan's preferred generator
 _W_REUSE = 0.3   # bonus for reusing a motif the plan asked for
+_W_RECAP = 0.6   # decisive bonus for an enabled recapitulation (ABA) close
 
 
 @dataclass
@@ -121,11 +122,14 @@ def _clip_sections(structure: MusicStructure, n: int) -> list[Section]:
 
 def select_sources(lodge_z: np.ndarray, edge_z: np.ndarray, structure: MusicStructure,
                    storyboard: Storyboard, *, motif_reuse: bool = True,
-                   energy_shaping: bool = False) -> list[dict]:
+                   energy_shaping: bool = False, recapitulate: bool = False) -> list[dict]:
     """Choose, per section, the material realizing the storyboard (pure numpy, no blending).
 
     Returns an ordered list of dicts: ``{a, b, source, role, clip, costs}``. ``source`` is
     ``"lodge"``, ``"edge"`` or ``"reuse:<i>"``. ``clip`` is the raw (pre-blend) chosen slice.
+    When ``recapitulate`` is set, the final section also gets a mirrored+retrograded reuse of the
+    OPENING section as a strong candidate, imposing an ABA ("reuse the intro, mirror it at the
+    end") close even when the music does not strictly repeat.
     """
     n = min(lodge_z.shape[0], edge_z.shape[0])
     sections = _clip_sections(structure, n)
@@ -151,6 +155,14 @@ def select_sources(lodge_z: np.ndarray, edge_z: np.ndarray, structure: MusicStru
                 reuse_clip = amplitude_scale(reuse_clip, float(plan.variation["amplitude"]))
             cands[f"reuse:{plan.reuse_of}"] = reuse_clip
 
+        # Recapitulation (ABA close): reuse the opening section at the last section, mirrored +
+        # retrograded, even when the music doesn't strictly repeat. Given a decisive bonus below.
+        recap_key: str | None = None
+        if recapitulate and i == len(sections) - 1 and i > 0 and 0 in chosen_raw:
+            recap_key = "reuse:0"
+            if recap_key not in cands:
+                cands[recap_key] = retrograde(mirror(retime(chosen_raw[0], b - a)))
+
         # energy match: normalize candidate energies to [0,1] within the section.
         energies = {k: _energy_mean(v) for k, v in cands.items()}
         emin, emax = min(energies.values()), max(energies.values())
@@ -162,6 +174,8 @@ def select_sources(lodge_z: np.ndarray, edge_z: np.ndarray, structure: MusicStru
         for k in cands:
             arc_pen = abs(erel[k] - float(plan.target_intensity))
             costs[k] = _W_COH * coh_pen[k] + _W_ARC * arc_pen + _bias_bonus(k, plan)
+        if recap_key is not None:
+            costs[recap_key] -= _W_RECAP
         source = min(costs, key=costs.get)
 
         gen = "reuse" if source.startswith("reuse") else source
@@ -214,7 +228,8 @@ def assemble_story(decisions: list[dict], *, blend_frames: int = 15) -> np.ndarr
 def build_story_dance(lodge_motion: np.ndarray, edge_motion: np.ndarray,
                       structure: MusicStructure, storyboard: Storyboard,
                       metadata: "SongMetadata", *, blend_frames: int = 15,
-                      motif_reuse: bool = True, energy_shaping: bool = False) -> StoryResult:
+                      motif_reuse: bool = True, energy_shaping: bool = False,
+                      recapitulate: bool = False) -> StoryResult:
     """Assemble a structure-aware dance from independent LODGE and EDGE motions + a storyboard."""
     lodge = to_zup(to_agentlodge139(ensure_lodge139(lodge_motion)))  # native -> AgentLODGE, Y->Z up
     edge = to_agentlodge139(ensure_lodge139(edge_motion))            # EDGE already Z-up
@@ -224,7 +239,8 @@ def build_story_dance(lodge_motion: np.ndarray, edge_motion: np.ndarray,
     lodge, edge = lodge[:n], edge[:n]
 
     decisions = select_sources(lodge, edge, structure, storyboard,
-                               motif_reuse=motif_reuse, energy_shaping=energy_shaping)
+                               motif_reuse=motif_reuse, energy_shaping=energy_shaping,
+                               recapitulate=recapitulate)
     if not decisions:
         raise ValueError("no usable sections for story assembly")
 

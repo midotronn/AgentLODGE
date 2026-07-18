@@ -369,6 +369,7 @@ def run_pipeline(
                 preprocessed.metadata,
                 total_frames,
                 min_section_seconds=settings.story_min_section_seconds,
+                spectral=settings.structure_spectral,
             )
             storyboard = author_storyboard(
                 structure,
@@ -386,6 +387,7 @@ def run_pipeline(
                 blend_frames=settings.hybrid_blend_frames,
                 motif_reuse=settings.story_motif_reuse,
                 energy_shaping=settings.story_energy_shaping,
+                recapitulate=settings.story_recapitulate,
             )
             selected_model = "story"
             selected_motion = story.motion

@@ -65,6 +65,8 @@ class Settings:
     story_motif_reuse: bool = True
     story_energy_shaping: bool = False
     story_min_section_seconds: float = 8.0
+    story_recapitulate: bool = False
+    structure_spectral: bool = False
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -115,6 +117,10 @@ class Settings:
             story_energy_shaping=os.getenv("AGENTLODGE_STORY_ENERGY_SHAPE", "0").lower()
             in {"1", "true", "yes"},
             story_min_section_seconds=float(os.getenv("AGENTLODGE_STORY_MIN_SECTION", "8.0")),
+            story_recapitulate=os.getenv("AGENTLODGE_STORY_RECAP", "0").lower()
+            in {"1", "true", "yes"},
+            structure_spectral=os.getenv("AGENTLODGE_STRUCTURE_SPECTRAL", "0").lower()
+            in {"1", "true", "yes"},
         )
 
     @classmethod
@@ -159,6 +165,8 @@ class Settings:
             story_motif_reuse=bool(data.get("story_motif_reuse", True)),
             story_energy_shaping=bool(data.get("story_energy_shaping", False)),
             story_min_section_seconds=float(data.get("story_min_section_seconds", 8.0)),
+            story_recapitulate=bool(data.get("story_recapitulate", False)),
+            structure_spectral=bool(data.get("structure_spectral", False)),
         )
 
     def validate_image_backend(self) -> None:
