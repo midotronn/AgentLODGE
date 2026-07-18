@@ -123,14 +123,17 @@ def _clip_sections(structure: MusicStructure, n: int) -> list[Section]:
 
 def select_sources(lodge_z: np.ndarray, edge_z: np.ndarray, structure: MusicStructure,
                    storyboard: Storyboard, *, motif_reuse: bool = True,
-                   energy_shaping: bool = False, recapitulate: bool = False) -> list[dict]:
+                   energy_shaping: bool = False, recapitulate: bool = False,
+                   post_variations: dict | None = None) -> list[dict]:
     """Choose, per section, the material realizing the storyboard (pure numpy, no blending).
 
     Returns an ordered list of dicts: ``{a, b, source, role, clip, costs}``. ``source`` is
     ``"lodge"``, ``"edge"`` or ``"reuse:<i>"``. ``clip`` is the raw (pre-blend) chosen slice.
     When ``recapitulate`` is set, the final section also gets a mirrored+retrograded reuse of the
     OPENING section as a strong candidate, imposing an ABA ("reuse the intro, mirror it at the
-    end") close even when the music does not strictly repeat.
+    end") close even when the music does not strictly repeat. ``post_variations`` maps a section
+    index to length-preserving edits ``{mirror, retrograde, amplitude}`` applied to that section's
+    chosen clip (used by the editing agent).
     """
     n = min(lodge_z.shape[0], edge_z.shape[0])
     sections = _clip_sections(structure, n)
@@ -182,9 +185,25 @@ def select_sources(lodge_z: np.ndarray, edge_z: np.ndarray, structure: MusicStru
         gen = "reuse" if source.startswith("reuse") else source
         matched_bias = plan.generator_bias in {"lodge", "edge"} and gen == plan.generator_bias
         chosen_raw[i] = cands[source]
+
+        # length-preserving per-section edits (editing agent): applied to the OUTPUT clip only,
+        # leaving chosen_raw (used for reuse/recap) unvaried.
+        out_clip = cands[source]
+        pv = (post_variations or {}).get(i) or {}
+        applied_pv: list[str] = []
+        if pv.get("mirror"):
+            out_clip = mirror(out_clip)
+            applied_pv.append("mirror")
+        if pv.get("retrograde"):
+            out_clip = retrograde(out_clip)
+            applied_pv.append("retrograde")
+        if pv.get("amplitude") and abs(float(pv["amplitude"]) - 1.0) > 1e-3:
+            out_clip = amplitude_scale(out_clip, float(pv["amplitude"]))
+            applied_pv.append(f"amp={pv['amplitude']}")
+
         decisions.append({
             "a": a, "b": b, "source": source, "role": sec.role,
-            "clip": cands[source],
+            "clip": out_clip,
             "costs": {k: round(v, 4) for k, v in costs.items()},
             "target_intensity": float(plan.target_intensity),
             "plan_bias": plan.generator_bias,
@@ -192,8 +211,9 @@ def select_sources(lodge_z: np.ndarray, edge_z: np.ndarray, structure: MusicStru
             "vocabulary": plan.vocabulary,
             "energies": {k: round(float(energies[k]), 4) for k in cands},
             "chosen_cost": round(float(costs[source]), 4),
-            "caption": caption_segment(cands[source], energy_norm=erel[source]),
+            "caption": caption_segment(out_clip, energy_norm=erel[source]),
             "plan_alignment": round(plan_realization_alignment(plan, erel[source]), 4),
+            "post_variation": applied_pv,
         })
     return decisions
 
@@ -232,7 +252,7 @@ def build_story_dance(lodge_motion: np.ndarray, edge_motion: np.ndarray,
                       structure: MusicStructure, storyboard: Storyboard,
                       metadata: "SongMetadata", *, blend_frames: int = 15,
                       motif_reuse: bool = True, energy_shaping: bool = False,
-                      recapitulate: bool = False) -> StoryResult:
+                      recapitulate: bool = False, post_variations: dict | None = None) -> StoryResult:
     """Assemble a structure-aware dance from independent LODGE and EDGE motions + a storyboard."""
     lodge = to_zup(to_agentlodge139(ensure_lodge139(lodge_motion)))  # native -> AgentLODGE, Y->Z up
     edge = to_agentlodge139(ensure_lodge139(edge_motion))            # EDGE already Z-up
@@ -243,7 +263,7 @@ def build_story_dance(lodge_motion: np.ndarray, edge_motion: np.ndarray,
 
     decisions = select_sources(lodge, edge, structure, storyboard,
                                motif_reuse=motif_reuse, energy_shaping=energy_shaping,
-                               recapitulate=recapitulate)
+                               recapitulate=recapitulate, post_variations=post_variations)
     if not decisions:
         raise ValueError("no usable sections for story assembly")
 
@@ -251,7 +271,7 @@ def build_story_dance(lodge_motion: np.ndarray, edge_motion: np.ndarray,
     schedule = [(d["a"], d["b"], d["source"], d["role"]) for d in decisions]
     _score_keys = ("a", "b", "source", "role", "costs", "target_intensity",
                    "plan_bias", "matched_bias", "vocabulary", "energies", "chosen_cost",
-                   "caption", "plan_alignment")
+                   "caption", "plan_alignment", "post_variation")
     section_scores = [{k: d[k] for k in _score_keys} for d in decisions]
     n_reuse = sum(1 for d in decisions if d["source"].startswith("reuse"))
     n_lodge = sum(1 for d in decisions if d["source"] == "lodge")
