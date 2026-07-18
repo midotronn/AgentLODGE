@@ -196,6 +196,8 @@ Stick-figure rendering needs `LODGE/data/smplx_neu_J_1.npy` (same file LODGE use
 | `AGENTLODGE_STORY_MOTIF` | Allow recurring-motif reuse across same-form sections (default: on) |
 | `AGENTLODGE_STORY_ENERGY_SHAPE` | Apply bounded amplitude shaping toward each section's target intensity (experimental; default: off) |
 | `AGENTLODGE_STORY_MIN_SECTION` | Minimum musical section length in seconds (default: `8.0`) |
+| `AGENTLODGE_STORY_RECAP` | Recapitulation (ABA) close: reuse the opening section mirrored+retrograded at the final section for a "reuse the intro, mirror at the end" structure (default: off) |
+| `AGENTLODGE_STRUCTURE_SPECTRAL` | Use normalized-Laplacian spectral clustering (McFee & Ellis) for section-type labels instead of the greedy cosine labeler (default: off) |
 
 ## Error handling
 

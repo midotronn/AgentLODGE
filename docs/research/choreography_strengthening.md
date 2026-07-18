@@ -245,22 +245,25 @@ measurable. Also landed `transition.retrograde` (Phase-1 primitive) + wired into
 path + storyboard schema. 9 new tests (21 total pass). **Song-150 baseline:** BAS LODGE 0.406 /
 EDGE 0.391 / STORY 0.408; foot-consistency LODGE 0.513 / EDGE 1.000 / STORY 0.786. *No model work.*
 
-**Phase 1 — Structure & recapitulation (mostly training-free, high payoff).**
-S1–S3 (spectral-cluster labels, hypermeter, `repeat_of`) + R1 `retrograde` + R2 recapitulation
-reuse + R3 storyboard directives + R5 SRC metric. Delivers genuine ABA / "reuse the intro,
-mirror it at the end" structure using existing primitives.
+**Phase 1 — Structure & recapitulation (mostly training-free, high payoff).** ✅ **DONE** (af15561)
+`Section.repeat_of` + normalized-Laplacian **spectral labels** (opt-in `AGENTLODGE_STRUCTURE_SPECTRAL`)
++ `retrograde` primitive + **recapitulation** close (`AGENTLODGE_STORY_RECAP`: reuse the opening
+mirrored+retrograded at the final section) + storyboard directive + **SRC** metric. Pure-numpy + tested.
 
-**Phase 2 — Best-of-K for beat alignment.**
-Expose seeds in the LODGE/EDGE subprocess calls; `best_of_k.py` scoring by BAS/PFC/energy; apply
-to agentically-chosen + rhythmically-complex sections. Validate BAS gains vs Phase 0 baseline.
+**Phase 2 — Best-of-K for beat alignment.** ✅ **DONE** (1387e20)
+`dance/best_of_k.py` — generator-agnostic best-of-K: a `generate_fn(seed)` closure, scored by
+composite BAS(0.6)+foot(0.25)+energy(0.15), returns the argmax + per-seed report. Tested with
+synthetic candidates. *Remaining integration:* wire `generate_fn` to seeded LODGE/EDGE calls (GPU).
 
-**Phase 3 — Description-grounded reasoning.**
-`segment_caption.py` (kinematic captions first) + description-grounded storyboard/selection + TMR
-plan↔realization verifier. Makes `vocabulary` meaningful.
+**Phase 3 — Description-grounded reasoning.** ✅ **DONE** (b1e816f)
+`agent/segment_caption.py` — FK-free kinematic captions + vocabulary↔energy match (makes `vocabulary`
+meaningful) + `plan_realization_alignment` verifier (optional TMR hook). Surfaced per section in the
+assembler's decisions. *Optional upgrade:* learned captioner (MotionGPT/TM2T) + TMR critic.
 
-**Phase 4 — Natural-language editing agent.**
-`edit_agent.py` propose→apply→verify→refine over the bounded op set, reusing Phase 0–3 metrics/TMR
-as the verifier. Optional VLM-on-render critic.
+**Phase 4 — Natural-language editing agent.** ✅ **DONE** (218e69c)
+`agent/edit_agent.py` — parse NL → bounded `EditOp` → apply → re-assemble → verify → bounded refine
+loop over existing controls (recapitulate / set_intensity / set_bias / mirror·retrograde·amplitude /
+beat), plus per-section `post_variations` in the assembler. Tested offline. *Optional:* VLM critic.
 
 **Phase 5 (stretch) — Guidance & learned components.**
 Universal-Guidance beat steering (B4); learned captioner (MotionGPT); TMR fine-tuned on dance.
