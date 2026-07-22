@@ -32,6 +32,7 @@ def main() -> int:
     parser.add_argument("--work-dir", required=True)
     parser.add_argument("--features-npy", required=True)
     parser.add_argument("--output-npy", required=True)
+    parser.add_argument("--seed", type=int, default=None)
     args = parser.parse_args()
 
     edge_root = Path(args.edge_root).resolve()
@@ -45,6 +46,12 @@ def main() -> int:
 
     import torch
     from EDGE import EDGE
+
+    if args.seed is not None:
+        torch.manual_seed(int(args.seed))
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(int(args.seed))
+        np.random.seed(int(args.seed) % (2 ** 32 - 1))
 
     fps = 30
     overlap_seconds = 2.5

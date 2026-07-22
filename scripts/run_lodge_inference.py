@@ -23,6 +23,7 @@ def main() -> int:
     parser.add_argument("--lodge-weights-path", required=True)
     parser.add_argument("--lodge-global-weights-path", required=True)
     parser.add_argument("--lodge-genre", default="Hiphop")
+    parser.add_argument("--seed", type=int, default=None)
     args = parser.parse_args()
 
     root = Path(args.agentlodge_root).resolve()
@@ -52,7 +53,7 @@ def main() -> int:
     features = np.load(args.features_npy)
     work_dir = Path(args.work_dir).resolve()
     output_npy = Path(args.output_npy).resolve()
-    result = generate_lodge_dance(features, settings, work_dir)
+    result = generate_lodge_dance(features, settings, work_dir, seed=args.seed)
     np.save(output_npy, result.motion.astype("float32"))
     summary_path = work_dir / "lodge_summary.txt"
     summary_path.write_text(result.summary)

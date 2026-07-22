@@ -23,8 +23,13 @@ def generate_edge_dance(
     edge_slices: list[np.ndarray],
     settings: Settings,
     work_dir: Path,
+    *,
+    seed: int | None = None,
 ) -> EdgeResult:
-    """Run EDGE long-form generation in an isolated EDGE subprocess."""
+    """Run EDGE long-form generation in an isolated EDGE subprocess.
+
+    ``seed`` seeds the EDGE diffusion sampler for reproducible / seed-diverse output (best-of-K).
+    """
     edge_root = settings.edge_code_path
     if not edge_root.exists():
         raise FileNotFoundError(f"EDGE codebase not found at {edge_root}")
@@ -47,6 +52,7 @@ def generate_edge_dance(
         work_dir,
         features_path,
         output_path,
+        seed=seed,
     )
 
     motion = np.load(output_path).astype(np.float32)

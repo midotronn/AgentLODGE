@@ -70,8 +70,13 @@ def generate_lodge_dance(
     work_dir: Path,
     *,
     genre: str | None = None,
+    seed: int | None = None,
 ) -> LodgeResult:
-    """Run LODGE global + local diffusion on preprocessed librosa features."""
+    """Run LODGE global + local diffusion on preprocessed librosa features.
+
+    ``seed`` seeds torch/numpy before diffusion sampling so runs are reproducible and, across
+    different seeds, produce diverse dances (used by best-of-K beat-alignment selection).
+    """
     lodge_root = settings.lodge_code_path
     if not lodge_root.exists():
         raise FileNotFoundError(f"LODGE codebase not found at {lodge_root}")
@@ -90,6 +95,12 @@ def generate_lodge_dance(
         from dld.data.get_data import get_datasets
         from dld.models.get_model import get_module
         from dld.utils.logger import create_logger
+
+        if seed is not None:
+            torch.manual_seed(int(seed))
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(int(seed))
+            np.random.seed(int(seed) % (2 ** 32 - 1))
 
         old_argv = sys.argv
         sys.argv = [

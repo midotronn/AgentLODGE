@@ -13,6 +13,7 @@ the heavy models. Candidates are independent -> the K generations can be run in 
 
 from __future__ import annotations
 
+import logging
 from typing import Callable, Sequence
 
 import numpy as np
@@ -22,6 +23,8 @@ from agentlodge.dance.beat_metrics import (
     beat_alignment_score,
     foot_contact_consistency,
 )
+
+logger = logging.getLogger(__name__)
 
 # Composite weights: BAS dominates (the weakness); foot-contact + energy match are secondary.
 _W_BAS = 0.6
@@ -36,13 +39,18 @@ def _mean_speed(motion: np.ndarray) -> float:
 def score_candidates(motions: Sequence[np.ndarray], music_beat_frames, *,
                      target_intensity: float | None = None, sigma_frames: float = 3.0,
                      w_bas: float = _W_BAS, w_foot: float = _W_FOOT,
-                     w_energy: float = _W_ENERGY) -> list[dict]:
+                     w_energy: float = _W_ENERGY, score_transform=None) -> list[dict]:
     """Score each candidate motion. Energy match is computed *across the candidate set* (min-max),
-    so ``target_intensity`` in [0,1] means "prefer the livelier / calmer candidate"."""
-    n = len(motions)
-    bas = [beat_alignment_score(m, music_beat_frames, sigma_frames=sigma_frames) for m in motions]
-    foot = [foot_contact_consistency(m) for m in motions]
-    speeds = np.array([_mean_speed(m) for m in motions], dtype=np.float64)
+    so ``target_intensity`` in [0,1] means "prefer the livelier / calmer candidate".
+
+    ``score_transform`` optionally maps each raw candidate to the AgentLODGE 139-dim scoring format
+    (e.g. a raw LODGE/EDGE output -> ``to_zup(to_agentlodge139(ensure_lodge139(m)))``) before scoring.
+    """
+    prepped = [score_transform(m) if score_transform is not None else m for m in motions]
+    n = len(prepped)
+    bas = [beat_alignment_score(m, music_beat_frames, sigma_frames=sigma_frames) for m in prepped]
+    foot = [foot_contact_consistency(m) for m in prepped]
+    speeds = np.array([_mean_speed(m) for m in prepped], dtype=np.float64)
     if target_intensity is not None and n > 1 and speeds.max() > speeds.min():
         erel = (speeds - speeds.min()) / (speeds.max() - speeds.min())
         ems = 1.0 - np.abs(erel - float(target_intensity))
@@ -100,3 +108,48 @@ def best_of_k(generate_fn: Callable[[int], np.ndarray | None], seeds: Sequence[i
         "winner_bas": scores[best]["bas"],
     }
     return motions[best], used[best], report
+
+
+def generate_best_of_k(generate_fn: Callable[[int], np.ndarray | None], k: int,
+                       music_beat_frames, *, base_seed: int = 0, **score_kw):
+    """Convenience: run best-of-K over consecutive seeds ``base_seed .. base_seed+k-1``.
+
+    ``score_kw`` may include ``target_intensity`` and ``score_transform`` (to convert a raw
+    generator output to the 139-dim scoring format before BAS). Returns ``(motion, seed, report)``.
+    """
+    seeds = list(range(int(base_seed), int(base_seed) + max(1, int(k))))
+    return best_of_k(generate_fn, seeds, music_beat_frames, **score_kw)
+
+
+def best_of_k_job(job_fn: Callable[[int | None], dict], k: int | None, music_beat_frames, *,
+                  score_transform=None) -> dict:
+    """Run a generation ``job_fn(seed) -> {"motion", "error", "summary", ...}`` under best-of-K
+    beat-alignment selection.
+
+    Generates K seeded candidates (seeds 0..K-1), scores each by BAS (after ``score_transform`` to
+    the 139-dim scoring format), and returns the winning job dict (summary annotated). Falls back to
+    a single ungated run (``job_fn(None)``) when K<=1, no beats are available, or selection fails.
+    """
+    if not k or int(k) <= 1 or music_beat_frames is None:
+        return job_fn(None)
+    results: dict[int, dict] = {}
+
+    def gen(seed):
+        r = job_fn(seed)
+        results[seed] = r
+        return r.get("motion") if r.get("error") is None else None
+
+    try:
+        _, seed, report = best_of_k(gen, list(range(int(k))), music_beat_frames,
+                                    score_transform=score_transform)
+        r = dict(results[seed])
+        r["summary"] = (r.get("summary", "")
+                        + f" | best-of-{report['k']} by BAS: seed {seed} (BAS {report['winner_bas']})")
+        logger.info("Best-of-%s selected seed %s (BAS %s)", report["k"], seed, report["winner_bas"])
+        return r
+    except Exception as exc:  # noqa: BLE001 - never let selection break generation
+        logger.warning("best-of-K selection failed (%s); using a single generation", exc)
+        for r in results.values():
+            if r.get("error") is None and r.get("motion") is not None:
+                return r
+        return job_fn(None)

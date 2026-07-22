@@ -250,10 +250,15 @@ EDGE 0.391 / STORY 0.408; foot-consistency LODGE 0.513 / EDGE 1.000 / STORY 0.78
 + `retrograde` primitive + **recapitulation** close (`AGENTLODGE_STORY_RECAP`: reuse the opening
 mirrored+retrograded at the final section) + storyboard directive + **SRC** metric. Pure-numpy + tested.
 
-**Phase 2 — Best-of-K for beat alignment.** ✅ **DONE** (1387e20)
+**Phase 2 — Best-of-K for beat alignment.** ✅ **DONE** (1387e20 + integration)
 `dance/best_of_k.py` — generator-agnostic best-of-K: a `generate_fn(seed)` closure, scored by
-composite BAS(0.6)+foot(0.25)+energy(0.15), returns the argmax + per-seed report. Tested with
-synthetic candidates. *Remaining integration:* wire `generate_fn` to seeded LODGE/EDGE calls (GPU).
+composite BAS(0.6)+foot(0.25)+energy(0.15), returns the argmax + per-seed report. **Now fully wired
+into the pipeline:** seed control end-to-end (`generate_lodge_dance`/`generate_edge_dance` +
+`run_lodge_inference.py`/`run_edge_inference.py --seed` + `subprocess_runner`), a `best_of_k_job`
+orchestrator + `_lodge/_edge_score_transform`, and `AGENTLODGE_BEST_OF_K` (generate K seeded
+whole-song candidates per generator, keep the most beat-aligned). Selection validated on real
+motions + unit tests. *Live seeded-generation run needs the pod's model env (torch + checkpoints)
+restored — the migrated pod lost them.*
 
 **Phase 3 — Description-grounded reasoning.** ✅ **DONE** (b1e816f)
 `agent/segment_caption.py` — FK-free kinematic captions + vocabulary↔energy match (makes `vocabulary`

@@ -83,3 +83,55 @@ def test_target_intensity_affects_energy_match():
     lively[:, :3] *= 3.0                         # larger movement -> higher energy
     hi = BK.score_candidates([calm, lively], _music(), target_intensity=1.0)
     assert hi[1]["energy_match"] >= hi[0]["energy_match"]  # target=high favors the livelier one
+
+
+# --------------------------------------------------------------------------- score_transform
+def _marker(tag):
+    return np.full((1, 1), tag, dtype=np.float32)
+
+
+def _phase_transform(m):
+    return _pulsing_motion(150, 15, phase=int(m[0, 0]))
+
+
+def test_score_transform_applied_before_scoring():
+    # raw candidates are tiny markers; the transform expands them to aligned/misaligned motions
+    scores = BK.score_candidates([_marker(0), _marker(7)], _music(), score_transform=_phase_transform)
+    assert scores[0]["bas"] > scores[1]["bas"]
+
+
+def test_generate_best_of_k_selects_winning_seed():
+    def gen(seed):
+        return _pulsing_motion(150, 15, phase=0) if seed == 2 else _pulsing_motion(150, 15, phase=7)
+
+    motion, seed, report = BK.generate_best_of_k(gen, 4, _music(), base_seed=0)
+    assert seed == 2 and report["seeds"] == [0, 1, 2, 3]
+
+
+# --------------------------------------------------------------------------- best_of_k_job
+def test_best_of_k_job_single_run_when_k_is_one():
+    calls = []
+
+    def job(seed):
+        calls.append(seed)
+        return {"motion": _pulsing_motion(150, 15, 0), "error": None, "summary": "one"}
+
+    r = BK.best_of_k_job(job, 1, _music())
+    assert calls == [None] and r["summary"] == "one"
+
+
+def test_best_of_k_job_selects_best_seed_and_annotates():
+    def job(seed):
+        return {"motion": _pulsing_motion(150, 15, 0 if seed == 1 else 7),
+                "error": None, "summary": "gen"}
+
+    r = BK.best_of_k_job(job, 3, _music())
+    assert "best-of-3" in r["summary"] and "seed 1" in r["summary"]
+
+
+def test_best_of_k_job_falls_back_when_all_fail():
+    def job(seed):
+        return {"motion": None, "error": "boom", "summary": ""}
+
+    r = BK.best_of_k_job(job, 3, _music())
+    assert r["error"] == "boom"   # fell back to a single run

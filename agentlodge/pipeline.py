@@ -18,6 +18,7 @@ from agentlodge.agent.selector import SelectionResult, select_dance
 from agentlodge.audio.preprocess import PreprocessedAudio, preprocess_audio, release_torch_memory
 from agentlodge.config import FPS, Settings
 from agentlodge.dance.format import ensure_lodge139
+from agentlodge.dance.best_of_k import best_of_k_job as _best_of_k_job
 from agentlodge.dance.hybrid import build_hybrid, _merge_runs
 from agentlodge.audio.structure import analyze_structure
 from agentlodge.agent.storyboard import author_storyboard
@@ -62,6 +63,7 @@ def _run_lodge_job(
     lodge_features: np.ndarray,
     settings_dict: dict,
     work_dir: str,
+    seed: int | None = None,
 ) -> dict:
     settings = Settings.from_dict(settings_dict)
     work = Path(work_dir).resolve()
@@ -78,6 +80,7 @@ def _run_lodge_job(
             features_path,
             output_path,
             work,
+            seed=seed,
         )
         motion = np.load(output_path)
         return {"motion": motion, "summary": summary, "error": None}
@@ -94,6 +97,7 @@ def _run_edge_job(
     edge_slices: list,
     settings_dict: dict,
     work_dir: str,
+    seed: int | None = None,
 ) -> dict:
     settings = Settings.from_dict(settings_dict)
     work = Path(work_dir).resolve()
@@ -115,6 +119,7 @@ def _run_edge_job(
             work,
             features_path,
             output_path,
+            seed=seed,
         )
         motion = np.load(output_path).astype(np.float32)
         if motion.shape[0] > expected_frames:
@@ -234,7 +239,23 @@ def _settings_to_dict(settings: Settings) -> dict:
         "story_motif_reuse": settings.story_motif_reuse,
         "story_energy_shaping": settings.story_energy_shaping,
         "story_min_section_seconds": settings.story_min_section_seconds,
+        "story_recapitulate": settings.story_recapitulate,
+        "structure_spectral": settings.structure_spectral,
+        "best_of_k": settings.best_of_k,
     }
+
+
+def _lodge_score_transform(motion):
+    """Convert a raw LODGE motion to the AgentLODGE 139-dim Z-up scoring format (needs torch)."""
+    from agentlodge.dance.format import ensure_lodge139, to_agentlodge139
+    from agentlodge.dance.transition import to_zup
+    return to_zup(to_agentlodge139(ensure_lodge139(motion)))
+
+
+def _edge_score_transform(motion):
+    """Convert a raw EDGE motion to the AgentLODGE 139-dim scoring format (EDGE already Z-up)."""
+    from agentlodge.dance.format import ensure_lodge139, to_agentlodge139
+    return to_agentlodge139(ensure_lodge139(motion))
 
 
 def run_pipeline(
@@ -272,10 +293,15 @@ def run_pipeline(
         )
 
     settings_dict = _settings_to_dict(settings)
-    lodge_out = _run_lodge_job(
-        preprocessed.lodge_features,
-        settings_dict,
-        str(work_root / "lodge"),
+    _music_beats = getattr(preprocessed.metadata, "beat_frames", None)
+    lodge_out = _best_of_k_job(
+        lambda seed: _run_lodge_job(
+            preprocessed.lodge_features,
+            settings_dict,
+            str(work_root / "lodge" / (f"seed_{seed}" if seed is not None else "single")),
+            seed=seed,
+        ),
+        settings.best_of_k, _music_beats, _lodge_score_transform,
     )
     lodge_result = GenerationOutcome(
         motion=lodge_out["motion"],
@@ -303,11 +329,15 @@ def run_pipeline(
 
     edge_result = GenerationOutcome()
     if preprocessed.edge_feature_slices:
-        edge_out = _run_edge_job(
-            str(preprocessed.wav_path),
-            preprocessed.edge_feature_slices,
-            settings_dict,
-            str(work_root),
+        edge_out = _best_of_k_job(
+            lambda seed: _run_edge_job(
+                str(preprocessed.wav_path),
+                preprocessed.edge_feature_slices,
+                settings_dict,
+                str(work_root),
+                seed=seed,
+            ),
+            settings.best_of_k, _music_beats, _edge_score_transform,
         )
         edge_result = GenerationOutcome(
             motion=edge_out["motion"],

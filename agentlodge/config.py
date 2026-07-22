@@ -67,6 +67,7 @@ class Settings:
     story_min_section_seconds: float = 8.0
     story_recapitulate: bool = False
     structure_spectral: bool = False
+    best_of_k: int = 1
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -121,6 +122,7 @@ class Settings:
             in {"1", "true", "yes"},
             structure_spectral=os.getenv("AGENTLODGE_STRUCTURE_SPECTRAL", "0").lower()
             in {"1", "true", "yes"},
+            best_of_k=int(os.getenv("AGENTLODGE_BEST_OF_K", "1")),
         )
 
     @classmethod
@@ -167,6 +169,7 @@ class Settings:
             story_min_section_seconds=float(data.get("story_min_section_seconds", 8.0)),
             story_recapitulate=bool(data.get("story_recapitulate", False)),
             structure_spectral=bool(data.get("structure_spectral", False)),
+            best_of_k=int(data.get("best_of_k", 1)),
         )
 
     def validate_image_backend(self) -> None:

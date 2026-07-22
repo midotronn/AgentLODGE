@@ -198,6 +198,7 @@ Stick-figure rendering needs `LODGE/data/smplx_neu_J_1.npy` (same file LODGE use
 | `AGENTLODGE_STORY_MIN_SECTION` | Minimum musical section length in seconds (default: `8.0`) |
 | `AGENTLODGE_STORY_RECAP` | Recapitulation (ABA) close: reuse the opening section mirrored+retrograded at the final section for a "reuse the intro, mirror at the end" structure (default: off) |
 | `AGENTLODGE_STRUCTURE_SPECTRAL` | Use normalized-Laplacian spectral clustering (McFee & Ellis) for section-type labels instead of the greedy cosine labeler (default: off) |
+| `AGENTLODGE_BEST_OF_K` | Generate K seeded candidates per generator (LODGE/EDGE) and keep the most beat-aligned (Beat Alignment Score); `1` = single generation (default). K>1 multiplies generation cost by K |
 
 ## Error handling
 

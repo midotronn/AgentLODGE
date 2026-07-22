@@ -56,6 +56,7 @@ def run_lodge_inference_subprocess(
     output_npy: Path,
     work_dir: Path,
     *,
+    seed: int | None = None,
     timeout_seconds: int | None = None,
 ) -> str:
     python = _venv_python(lodge_code_path, "LODGE")
@@ -79,6 +80,8 @@ def run_lodge_inference_subprocess(
         "--lodge-genre",
         lodge_genre,
     ]
+    if seed is not None:
+        cmd += ["--seed", str(int(seed))]
     result = _run(cmd, timeout_seconds=timeout_seconds, step="LODGE")
     _raise_on_failure(result, "LODGE inference")
     summary_path = work_dir / "lodge_summary.txt"
@@ -114,6 +117,7 @@ def run_edge_inference_subprocess(
     features_npy: Path,
     output_npy: Path,
     *,
+    seed: int | None = None,
     timeout_seconds: int | None = None,
 ) -> None:
     python = _venv_python(edge_code_path, "EDGE")
@@ -131,6 +135,8 @@ def run_edge_inference_subprocess(
         "--output-npy",
         str(output_npy),
     ]
+    if seed is not None:
+        cmd += ["--seed", str(int(seed))]
     result = _run(cmd, timeout_seconds=timeout_seconds, step="EDGE")
     _raise_on_failure(result, "EDGE inference")
 
